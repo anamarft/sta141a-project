@@ -1,0 +1,902 @@
+---
+title: "STA 141A: Project"
+author: "Anamar Flores 916976613"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = TRUE, echo = TRUE, fig.align='center')
+library(tidyverse)
+options(warn=-1)
+```
+
+***
+
+## Exploratory Data Analysis
+
+```{r}
+library(dplyr)
+# empty list to store session data and probability data
+session <- list()
+prob_data_list <- list()
+all_session_data <- list()
+
+for (i in 1:18) {
+  session[[i]] <- readRDS(paste('/Users/anamar/Desktop/sessions/session', i, '.rds', sep=''))
+  session_data <- as.data.frame(session[[i]][1:3])
+  
+  # Add trial ID column
+  session_data <- session_data %>% 
+  mutate(trial_id = i)
+  
+  # label choices as left, right, no-go, or none
+  session_data$choice <- ifelse(session_data$contrast_left > session_data$contrast_right &
+                                  session_data$feedback_type == "1", "right",
+                              ifelse(session_data$contrast_right > session_data$contrast_left & 
+                                       session_data$feedback_type == "1", "left",
+                              ifelse(session_data$contrast_left == 0 & session_data$contrast_right == 0 &
+                                          session_data$feedback_type == "1", "none", "NoGo")))
+  
+  # add pedestal and relative contrast columns
+  session_data <- session_data %>% 
+    mutate(pedestal = pmin(contrast_left, contrast_right),
+           rel_contrast = ifelse(contrast_left > contrast_right,
+                                 contrast_left - pedestal,
+                                 -(contrast_right - pedestal)))
+  # positive numbers indicating higher contrast on the right screen, and negative numbers for higher contrast on the left screen
+  
+  # append the session data to the list of all session data
+  all_session_data[[i]] <- session_data
+}
+
+# combine all session data into a single data frame
+all_session_data <- bind_rows(all_session_data)
+
+# calculate probability data for all sessions
+prob_data_all <- all_session_data %>%
+  group_by(pedestal, rel_contrast, choice) %>%
+  summarize(prob = n()) %>%
+  mutate(prob = prob / sum(prob))
+```
+session: a list of three elements, where each element contains session data.
+session is a list that is used to store the raw data from each session. In the loop, readRDS is used to read in the data from each session file and assign it to the corresponding element of the session list.
+
+all_session_data is a list that is used to store the pre-processed data from each session. In the loop, the raw data is processed and the resulting data frame is added to the all_session_data list.
+
+prob_data_list is a list that is used to store the probability data for each session. In the loop, the probability data is calculated for each session and added to the prob_data_list.
+
+After the loop, all_session_data is combined into a single data frame using bind_rows, and prob_data_list is also combined into a single data frame using bind_rows. Finally, prob_data_all is created by grouping the combined all_session_data data frame by pedestal, rel_contrast, and choice, and then summarizing to calculate the probability of each choice given the pedestal and relative contrast values.
+
+```{r}
+# initialize empty vectors for each variable
+unique_conditions <- data.frame()
+unique_feedback <- numeric()
+
+# loop through the RDS files and read in the data
+for(i in 1:18) {
+  session[[i]] <- readRDS(paste('/Users/anamar/Desktop/sessions/session', i, '.rds', sep=''))
+
+  # get the unique stimulus conditions in this session
+  unique_conditions <- rbind(unique_conditions, unique(data.frame(session[[i]]$contrast_left, session[[i]]$contrast_right)))
+
+  # get the unique feedback types in this session
+  unique_feedback <- unique(c(unique_feedback, session[[i]]$feedback_type))
+}
+
+# initialize empty data frames for trial and neuron data
+trial_data <- data.frame(session_number = integer(), num_trials = integer())
+neuron_data <- data.frame(session_number = integer(), num_neurons = integer())
+
+# loop through the RDS files and read in the data
+for(i in 1:18) {
+  session <- readRDS(paste('/Users/anamar/Desktop/sessions/session', i, '.rds', sep=''))
+
+  # get the number of trials in this session and add a row to trial_data
+  num_trials <- length(session$feedback_type)
+  trial_data <- rbind(trial_data, data.frame(session_number = i, num_trials = num_trials))
+
+  # get the number of neurons in this session and add a row to neuron_data
+  num_neurons <- length(session$spks[[5]])
+  neuron_data <- rbind(neuron_data, data.frame(session_number = i, num_neurons = num_neurons))
+}
+
+# get the number of unique stimulus conditions
+unique_conditions <- unique(unique_conditions)
+
+cat("Unique stimulus conditions:", nrow(unique_conditions), "\n")
+cat("Unique feedback types:", length(unique_feedback), "\n")
+cat("Number of neurons:", sum(neuron_data$num_neurons), "\n")
+cat("Number of trials:", sum(trial_data$num_trials), "\n")
+```
+
+```{r}
+library(tidyr)
+library(ggplot2)
+
+# Create a new data frame with contrast_left, contrast_right, and choice columns
+contrast_data <- bind_rows(all_session_data) %>%
+  select(contrast_left, contrast_right, choice)
+
+#line graph
+prob_choice_line <- contrast_data %>%
+ mutate(pedestal = pmin(contrast_left, contrast_right),
+           rel_contrast = ifelse(contrast_left > contrast_right,
+                                 contrast_left - pedestal,
+                                 -(contrast_right - pedestal)))
+
+prob_choice_line <- prob_choice_line %>%
+  group_by(pedestal, rel_contrast) %>%
+  summarize(left_count = sum(choice == "left"),
+            right_count = sum(choice == "right"),
+            nogo_count = sum(choice == "NoGo"),
+            none_count = sum(choice == "none"),
+            total_count = n()) %>%
+  mutate(prob_left = left_count / (left_count + right_count + nogo_count + none_count),
+         prob_right = right_count / (left_count + right_count + nogo_count + none_count),
+         prob_nogo = nogo_count / (left_count + right_count + nogo_count + none_count),
+         prob_none = none_count / (left_count + right_count + nogo_count + none_count))
+
+prob_choice_long <- prob_choice_line %>%
+  gather(key = "choice", value = "probability", prob_left, prob_right, prob_nogo, prob_none)
+
+ggplot(prob_choice_long, aes(x = rel_contrast, y = probability, color = choice)) +
+  geom_line() +
+  facet_grid(~ choice, scales = "free_y", switch = "y") +
+  scale_color_manual(values = c("prob_left" = "blue", "prob_right" = "red", "prob_nogo" = "gray", "prob_none" = "black")) +
+  labs(x = "Relative Contrast", y = "Probability", title = "Probability of Each Choice by Relative Contrast")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# Calculate the probability of choice for each combination of contrast_left and contrast_right
+prob_choice_heat <- contrast_data %>%
+  group_by(contrast_left, contrast_right) %>%
+  summarize(left_count = sum(choice == "left"),
+            right_count = sum(choice == "right"),
+            nogo_count = sum(choice == "NoGo"),
+            none_count = sum(choice == "none"),
+            total_count = n()) %>%
+  mutate(prob_left = left_count / (left_count + right_count + nogo_count + none_count),
+         prob_right = right_count / (left_count + right_count + nogo_count + none_count),
+         prob_nogo = nogo_count / (left_count + right_count + nogo_count + none_count),
+         prob_none = none_count / (left_count + right_count + nogo_count + none_count))
+
+# heat map for left choice
+ggplot(prob_choice_heat, aes(x = contrast_right, y = contrast_left, fill = prob_left)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Probability of Left Choice",
+                     colors = c("#0571b0", "#92c5de", "#f7f7f7", "#f4a582", "#ca0020"),
+                       values = rescale(c(0, 0.25, 0.5, 0.75, 1))) +
+  scale_x_continuous(name = "Contrast Right",
+                     breaks = c(0, .25, .5, .75, 1),
+                     labels = c("0", ".25", ".5", ".75", "1")) +
+  scale_y_continuous(name = "Contrast Left",
+                     breaks = c(0, .25, .5, .75, 1),
+                     labels = c("0", ".25", ".5", ".75", "1"))
+# heat map for right choice
+ggplot(prob_choice_heat, aes(x = contrast_right, y = contrast_left, fill = prob_right)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Probability of Right Choice",
+                       colors = c("#0571b0", "#92c5de", "#f7f7f7", "#f4a582", "#ca0020"),
+                       values = rescale(c(0, 0.25, 0.5, 0.75, 1))) +
+  scale_x_continuous(name = "Contrast Right",
+                     breaks = c(0, .25, .5, .75, 1),
+                     labels = c("0", ".25", ".5", ".75", "1")) +
+  scale_y_continuous(name = "Contrast Left",
+                     breaks = c(0, .25, .5, .75, 1),
+                     labels = c("0", ".25", ".5", ".75", "1"))
+#heat map for nogo choice
+ggplot(prob_choice_heat, aes(x = contrast_right, y = contrast_left, fill = prob_nogo)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Probability of NoGo",
+                     colors = c("#0571b0", "#92c5de", "#f7f7f7", "#f4a582", "#ca0020"),
+                       values = rescale(c(0, 0.25, 0.5, 0.75, 1))) +
+  scale_x_continuous(name = "Contrast Right",
+                     breaks = c(0, .25, .5, .75, 1),
+                     labels = c("0", ".25", ".5", ".75", "1")) +
+  scale_y_continuous(name = "Contrast Left",
+                     breaks = c(0, .25, .5, .75, 1),
+                     labels = c("0", ".25", ".5", ".75", "1"))
+```
+
+```{r}
+library(ggplot2)
+pd0_data <- prob_choice_line %>% 
+  filter(pedestal == 0) # filter to only include pedestal 0 data
+
+ggplot(pd0_data, aes(x = rel_contrast)) +
+  geom_line(aes(y = prob_left, color = "Left")) +
+  geom_line(aes(y = prob_right, color = "Right")) +
+  scale_color_manual(values = c("Left" = "blue", "Right" = "red")) +
+  labs(x = "Relative Contrast", y = "Probability", color = "Choice") +
+  ggtitle("Probability of Left and Right Choice Given Relative Contrast (Pedestal 0)")
+```
+
+```{r}
+library(ggplot2)
+# plot the probability of left choice for each pedestal
+ggplot(prob_choice_line, aes(x = rel_contrast, y = prob_left)) +
+ geom_point() +
+  geom_smooth(method = "loess") +
+  facet_wrap(~ pedestal, nrow = 2, ncol = 2) +
+  labs(x = "Relative Contrast", y = "Probability of Left Choice") +
+  theme_bw() +
+  scale_y_continuous(limits = c(0, 1)) +
+  ggtitle("Probability of Left Choice Given Relative Contrast at Different Pedestal Values")
+
+# plot the probability of left choice for each pedestal
+ggplot(prob_choice_line, aes(x = rel_contrast, y = prob_right)) +
+ geom_point() +
+  geom_smooth(method = "loess") +
+  facet_wrap(~ pedestal, nrow = 2, ncol = 2) +
+  labs(x = "Relative Contrast", y = "Probability of Left Choice") +
+  theme_bw() +
+  scale_y_continuous(limits = c(0, 1)) +
+  ggtitle("Probability of Left Choice Given Relative Contrast at Different Pedestal Values")
+```
+
+now onto spikes ...
+
+```{r}
+# Create an empty list to store session data
+session <- vector("list", 18)
+for (i in 1:18) {
+  session[[i]] <- readRDS(paste('/Users/anamar/Desktop/sessions/session', i, '.rds', sep=''))
+  
+  # Add trial ID column
+  n_trials <- length(session[[i]]$spks)
+  session[[i]]$trial_id <- 1:n_trials
+  
+  # Add session number column
+  session[[i]]$session_number <- i
+  
+  # Get the number of neurons
+  n_neurons <- length(session[[i]]$spks[[1]])
+}
+
+# Create an empty data frame to store the average spike rates
+spike_rates_df <- data.frame(session = integer(),
+                             choice_type = character(),
+                             brain_region = character(),
+                             spike_rate = numeric())
+
+# Loop through each session
+for (i in 1:length(session)) {
+  
+  # Loop through each trial in the session
+  for (j in 1:length(session[[i]]$trial_id)) {
+    
+    # Get the trial data
+    trial_id <- session[[i]]$trial_id[j]
+    feedback_type <- session[[i]]$feedback_type[j]
+    contrast_left <- session[[i]]$contrast_left[j]
+    contrast_right <- session[[i]]$contrast_right[j]
+    brain_area <- session[[i]]$brain_area[j]
+    spks <- session[[i]]$spks[[j]]
+    time <- session[[i]]$time[[j]]
+    #OR session_start_time <- sapply(session[[i]]$time, function(x) min(x))
+      #session_end_time <- sapply(session[[i]]$time, function(x) max(x))
+      #time = session_end_time-session_start_time
+    
+    # Determine the choice type based on the contrasts
+    if (contrast_left > 0 & contrast_right == 0) {
+      choice_type <- "Left"
+    } else if (contrast_left == 0 & contrast_right > 0) {
+      choice_type <- "Right"
+    } else if (contrast_left == 0 & contrast_right == 0) {
+      choice_type <- "NoGo"
+    } else {
+      choice_type <- "None"
+    }
+     # Calculate the average spike rate for each brain region
+    brain_regions <- unique(session[[i]]$brain_area)
+    for (k in 1:length(brain_regions)) {
+      region_spks <- spks[brain_area == brain_regions[k], ]
+      region_spike_rate <- mean(rowSums(region_spks) / (length(time)))
+      spike_rates_df <- rbind(spike_rates_df,
+                              data.frame(session = i,
+                                         choice_type = choice_type,
+                                         brain_region = brain_regions[k],
+                                         spike_rate = region_spike_rate))
+    }
+  }
+}
+```
+
+```{r, eval = FALSE}
+# Create a line plot for each brain region and choice type
+brain_regions <- unique(session[[1]]$brain_area)
+for (i in 1:length(brain_regions)) {
+  for (j in c("Left", "Right", "NoGo", "None")) {
+    subset_df <- subset(spike_rates_df, brain_region == brain_regions[i] & choice_type == j)
+    plot(subset_df$session, subset_df$spike_rate, type = "o",
+         main = paste("Spike Rates in", brain_regions[i], "for", j, "Choices"),
+         xlab = "Session", ylab = "Spike Rate")
+  }
+}
+```
+
+
+```{r}
+#root had the most activity across sessions:
+# define the root brain region
+root_brain_region <- "root"
+
+# loop through each choice type
+for (j in c("Left", "Right", "NoGo", "None")) {
+  subset_df <- subset(spike_rates_df, brain_region == root_brain_region & choice_type == j)
+  plot(subset_df$session, subset_df$spike_rate, type = "o",
+       main = paste("Spike Rates in", root_brain_region, "for", j, "Choices"),
+       xlab = "Session", ylab = "Spike Rate")
+}
+```
+A heatmap where each row represents a trial and each column represents a time bin, with the color of each cell indicating the spike rate of a particular neuron in that time bin. I want to visualize how the activity of each neuron changes over time within each trial.
+
+```{r}
+# access the first session
+session1 <- session[[1]]
+
+# define the time bin size in seconds
+time_bin_size <- 0.1
+
+# calculate the number of time bins based on the time bin size
+max_trial_duration <- max(sapply(session1$time, function(x) max(x) - min(x)))
+num_time_bins <- ceiling(max_trial_duration / time_bin_size)
+
+# create vectors to store trial start and end times
+trial_start_times <- sapply(session1$time, function(x) min(x))
+trial_end_times <- sapply(session1$time, function(x) max(x))
+
+# create an empty matrix to store the spike rates
+spike_rates <- matrix(0, nrow = length(session1$trial_id), ncol = max(sapply(session1$time, length)))
+
+# loop through each trial to calculate the spike rate for each time bin
+for (i in 1:length(session1$trial_id)) {
+  trial_time <- session1$time[[i]]
+  trial_spks <- matrix(session1$spks[[i]], nrow = length(trial_time), byrow = TRUE)
+  trial_start_time <- trial_start_times[i]
+  trial_end_time <- trial_end_times[i]
+  
+  # loop through each time bin in the trial
+  for (j in 1:length(trial_time)) {
+    # calculate the start and end time of the current time bin
+    bin_start_time <- trial_time[j] - time_bin_size / 2
+    bin_end_time <- trial_time[j] + time_bin_size / 2
+    
+    # make sure the time bin doesn't extend beyond the beginning or end of the trial
+    if (bin_start_time < trial_start_time) {
+      bin_start_time <- trial_start_time
+    }
+    if (bin_end_time > trial_end_time) {
+      bin_end_time <- trial_end_time
+    }
+    
+    # count the number of spikes in the current time bin for the current trial
+    num_spikes <- sum(trial_spks[j,][trial_time >= bin_start_time & trial_time < bin_end_time])
+    
+    # calculate the spike rate for the current time bin and trial
+    if (num_spikes == 0) {
+      spike_rate <- 0
+    } else {
+      spike_rate <- num_spikes / time_bin_size
+    }
+    
+    # store the spike rate in the spike_rates matrix
+    spike_rates[i, j] <- spike_rate
+  }
+}
+
+# create the heatmap using the spike rate matrix
+heatmap(spike_rates, Rowv = NA, Colv = NA, xlab = "Time Bin", ylab = "Trial", 
+        main = "Spike Rate Heatmap (Session 1)", col = rev(colorRampPalette(c("blue", "white", "red"))(100)))
+```
+This code creates a heatmap showing the spike rates of neurons in each trial as a function of time. The rows of the heatmap represent the trials, and the columns represent the time bins. The color of each cell represents the spike rate of a neuron in a specific trial and time bin.
+
+```{r}
+# Create a list to store the spike rate matrices for each session
+spike_rates_list <- list()
+
+# Loop through each session
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  
+  # define the time bin size in seconds
+  time_bin_size <- 0.1
+  
+  # calculate the number of time bins based on the time bin size
+  max_trial_duration <- max(sapply(current_session$time, function(x) max(x) - min(x)))
+  num_time_bins <- ceiling(max_trial_duration / time_bin_size)
+  
+  # create vectors to store trial start and end times
+  trial_start_times <- sapply(current_session$time, function(x) min(x))
+  trial_end_times <- sapply(current_session$time, function(x) max(x))
+  
+  # create an empty matrix to store the spike rates
+  spike_rates <- matrix(0, nrow = length(current_session$trial_id), ncol = max(sapply(current_session$time, length)))
+  
+  # loop through each trial to calculate the spike rate for each time bin
+  for (i in 1:length(current_session$trial_id)) {
+    trial_time <- current_session$time[[i]]
+    trial_spks <- matrix(current_session$spks[[i]], nrow = length(trial_time), byrow = TRUE)
+    trial_start_time <- trial_start_times[i]
+    trial_end_time <- trial_end_times[i]
+    
+    # loop through each time bin in the trial
+    for (j in 1:length(trial_time)) {
+      # calculate the start and end time of the current time bin
+      bin_start_time <- trial_time[j] - time_bin_size / 2
+      bin_end_time <- trial_time[j] + time_bin_size / 2
+      
+      # make sure the time bin doesn't extend beyond the beginning or end of the trial
+      if (bin_start_time < trial_start_time) {
+        bin_start_time <- trial_start_time
+      }
+      if (bin_end_time > trial_end_time) {
+        bin_end_time <- trial_end_time
+      }
+      
+      # count the number of spikes in the current time bin for the current trial
+      num_spikes <- sum(trial_spks[j,][trial_time >= bin_start_time & trial_time < bin_end_time])
+      
+      # calculate the spike rate for the current time bin and trial
+      if (num_spikes == 0) {
+        spike_rate <- 0
+      } else {
+        spike_rate <- num_spikes / time_bin_size
+      }
+      
+      # store the spike rate in the spike_rates matrix
+      spike_rates[i, j] <- spike_rate
+    }
+  }
+  
+  # Assign the spike rate matrix to the corresponding session index in the list
+  spike_rates_list[[s]] <- spike_rates
+}
+
+# Combine the spike rate matrices from the spike_rates_list into a single matrix
+combined_spike_rates <- do.call(rbind, spike_rates_list)
+
+# Calculate the average spike rates across trials for each time bin
+avg_spike_rates <- rowMeans(combined_spike_rates)
+
+# Calculate average spike rate
+average_spike_rate <- mean(avg_spike_rates)
+
+# Calculate standard deviation
+standard_deviation <- sd(avg_spike_rates)
+
+# Calculate minimum spike rate
+minimum_spike_rate <- min(avg_spike_rates)
+
+# Calculate maximum spike rate
+maximum_spike_rate <- max(avg_spike_rates)
+
+# Calculate range
+range_spike_rate <- max(avg_spike_rates) - min(avg_spike_rates)
+
+# Print the calculated statistics
+cat("Average Spike Rate: ", average_spike_rate, "\n")
+cat("Standard Deviation: ", standard_deviation, "\n")
+cat("Minimum Spike Rate: ", minimum_spike_rate, "\n")
+cat("Maximum Spike Rate: ", maximum_spike_rate, "\n")
+cat("Range of Spike Rates: ", range_spike_rate, "\n")
+
+# Plot histogram of spike rates
+hist(avg_spike_rates, breaks = 20, col = "blue", xlab = "Spike Rate", ylab = "Frequency",
+     main = "Spike Rate Distribution")
+
+# Plot density plot of spike rates
+plot(density(avg_spike_rates), col = "blue", xlab = "Spike Rate", ylab = "Density",
+     main = "Spike Rate Distribution")
+
+# Create the heatmap
+heatmap(combined_spike_rates, Rowv = NA, Colv = NA, xlab = "Time Bin", ylab = "Trial",
+        main = "Average Spike Rate Heatmap", col = rev(colorRampPalette(c("blue", "white", "red"))(100)))
+```
+
+
+```{r}
+# Define the start and end times of the session
+session1_start_time <- min(session[[1]]$time[[1]])
+session1_end_time <- max(session[[1]]$time[[1]])
+
+# Define the size of the raster plot
+plot_width <- 800
+plot_height <- 600
+
+# Create a blank plot with the correct dimensions
+plot(0, 0, type = "n", xlim = c(session1_start_time, session1_end_time), ylim = c(0, length(session1$spks)),
+     xlab = "Time (s)", ylab = "Neuron ID", main = "Raster Plot of Session 1, Trial 1",
+     cex.main = 1.5, cex.axis = 1.2, cex.lab = 1.2, cex = 0.8,
+     bg = "white", fg = "black", col.main = "black")
+
+# Loop through each time point and each neuron, and plot its spikes as a vertical line
+for (t in 1:length(session1$time[[1]])) {
+  for (i in 1:length(session1$spks)) {
+    neuron_spks <- session1$spks[[i]]
+    if (neuron_spks[t] == 1) {
+      line_x <- session1$time[[1]][t]
+      line_y <- i + 0.5
+      lines(c(line_x, line_x), c(line_y - 0.4, line_y + 0.4), col = "black", lwd = 2)
+    }
+  }
+}
+```
+
+```{r}
+#OH
+# duration b/w consecutive time points
+time_diffs <- diff(as.numeric(unlist(session1$time)))
+time_bin_size <- 100
+
+# cumulative sum of the time differences
+cum_time_diffs <- c(0, cumsum(time_diffs))
+
+# total session time (s)
+session_time <- cum_time_diffs[length(cum_time_diffs)]
+
+# number of time bins in the session
+num_time_bins <- ceiling(session_time / time_bin_size)
+
+# min and max time points
+min_time <- min(unlist(session1$time))
+max_time <- max(unlist(session1$time))
+
+# define the start and end times of each time bin
+bin_start_times <- seq(min_time, max_time, by = time_bin_size)
+bin_end_times <- c(bin_start_times[-1], max_time + 1)
+
+spike_counts <- matrix(0, nrow = nrow(session1$spks[[1]]), ncol = num_time_bins)
+# loop through each trial
+for (tr in 1:length(session1$spks)) {
+  # loop through each neuron and each time bin
+  for (i in 1:nrow(session1$spks[[tr]])) {
+    for (j in 1:num_time_bins) {
+      # start and end time of the current time bin
+      bin_start_time <- bin_start_times[j]
+      bin_end_time <- bin_end_times[j]
+
+      # count the number of spikes in the current time bin for the current neuron in the current trial
+      num_spikes <- sum(session1$spks[[tr]][i,][session1$time[[tr]] >= bin_start_time & session1$time[[tr]] < bin_end_time])
+
+      # store info
+      spike_counts[i, j] <- spike_counts[i, j] + num_spikes
+    }
+  }
+}
+
+
+# heatmap of the spike counts
+# transpose first
+spike_counts_transposed <- t(spike_counts)
+image(x = 1:num_time_bins, y = 1:nrow(spike_counts), spike_counts_transposed, col = terrain.colors(256), xlab = "Time Bin", ylab = "Neuron ID")
+```
+
+```{r}
+# create an empty list to store the spike counts data frames for each session
+spike_counts_list <- list()
+
+# loop through each session
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  
+  spike_counts <- matrix(0, nrow = nrow(current_session$spks[[1]]), ncol = num_time_bins)
+
+  for (tr in 1:length(current_session$spks)) {
+    
+    for (i in 1:nrow(current_session$spks[[tr]])) {
+      for (j in 1:num_time_bins) {
+        # start and end time of the current time bin
+        bin_start_time <- bin_start_times[j]
+        bin_end_time <- bin_end_times[j]
+
+        # count the number of spikes in the current time bin for the current neuron in the current trial
+        num_spikes <- sum(current_session$spks[[tr]][i,][current_session$time[[tr]] >= bin_start_time & current_session$time[[tr]] < bin_end_time])
+
+        # store the spike count in the data frame
+        spike_counts[i, j] <- spike_counts[i, j] + num_spikes
+      }
+    }
+  }
+  spike_counts_list[[s]] <- spike_counts
+}
+```
+
+```{r}
+library(ggplot2)
+
+# plot spike rate by trial within each session
+ggplot(spike_rates_df, aes(x = as.factor(session), y = spike_rate, color = brain_region)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ choice_type, nrow = 1) +
+  labs(title = "Spike Rates by Choice and Session",
+       x = "Session",
+       y = "Spike Rate",
+       color = "Brain Region",
+       subtitle = "Each line represents a brain region within a choice type") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, size = 16),
+        plot.subtitle = element_text(hjust = 0.5, size = 12),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "bottom",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12))
+```
+
+```{r}
+# calculate the mean spike rate for each session and choice type
+spike_rates_summary <- aggregate(spike_rate ~ session + choice_type, data = spike_rates_df, mean)
+
+ggplot(spike_rates_summary, aes(x = session, y = spike_rate, color = choice_type)) +
+  geom_line() +
+  xlab("Session") +
+  ylab("Mean Spike Rate") +
+  ggtitle("Mean Spike Rate Across Sessions and Choice Types")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+spike_rates_df <- drop_na(spike_rates_df)
+
+# calculate the total spike rate for each brain region in each session
+total_spikes <- spike_rates_df %>%
+  group_by(session, brain_region) %>%
+  summarise(total_spike_rate = sum(spike_rate))
+
+# calculate the percentage spike rate for each brain region in each session
+percent_spikes <- spike_rates_df %>%
+  inner_join(total_spikes, by = c("session", "brain_region")) %>%
+  mutate(percent_spike_rate = spike_rate / total_spike_rate * 100)
+
+# create a bar plot showing the percentage spike rate of neurons in each brain region in each session
+ggplot(percent_spikes, aes(x = session, y = percent_spike_rate, fill = brain_region)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~choice_type, nrow = 1) +
+  labs(x = "Session", y = "Percentage Spike Rate", fill = "Brain Region")
+```
+
+```{r}
+spike_rates_mouse <- list()
+for (i in 1:length(session)) {
+  mouse_name <- unique(session[[i]]$mouse_name)
+  if (length(mouse_name) == 1) {
+    if (!mouse_name %in% names(spike_rates_mouse)) {
+      spike_rates_mouse[[mouse_name]] <- data.frame(choice_type = character(),
+                                                    spike_rate = numeric())
+    }
+    for (j in 1:length(session[[i]]$trial_id)) {
+      # get the trial data
+      feedback_type <- session[[i]]$feedback_type[j]
+      contrast_left <- session[[i]]$contrast_left[j]
+      contrast_right <- session[[i]]$contrast_right[j]
+      spks <- session[[i]]$spks[[j]]
+      time <- session[[i]]$time[[j]]
+
+      # determine the choice type
+      if (contrast_left > 0 & contrast_right == 0) {
+        choice_type <- "Left"
+      } else if (contrast_left == 0 & contrast_right > 0) {
+        choice_type <- "Right"
+      } else if (contrast_left == 0 & contrast_right == 0) {
+        choice_type <- "NoGo"
+      } else {
+        choice_type <- "None"
+      }
+
+      # calculate the average spike rate for each choice type
+      mouse_data <- spike_rates_mouse[[mouse_name]]
+      if (choice_type %in% mouse_data$choice_type) {
+        row_index <- which(mouse_data$choice_type == choice_type)
+        mouse_data[row_index, "spike_rate"] <- mean(c(mouse_data[row_index, "spike_rate"], rowSums(spks) / (length(time))))[1]
+      } else {
+        mouse_data <- rbind(mouse_data, data.frame(choice_type = choice_type, 
+                                                   spike_rate = rowSums(spks) / (length(time))))
+      }
+      spike_rates_mouse[[mouse_name]] <- mouse_data
+    }
+  }
+}
+
+# calculate the maximum and minimum spike rates across all mice
+max_spike_rate <- max(unlist(lapply(spike_rates_mouse, function(x) max(x$spike_rate))))
+min_spike_rate <- min(unlist(lapply(spike_rates_mouse, function(x) min(x$spike_rate))))
+
+# create a boxplot for each mouse
+par(mfrow=c(2,2)) 
+for (i in 1:length(spike_rates_mouse)) {
+  mouse_data <- spike_rates_mouse[[i]]
+  mouse_name <- names(spike_rates_mouse)[i]
+  boxplot(spike_rate ~ choice_type, data = mouse_data, main = paste0("Average Spike Rates by Choice Type for ", mouse_name),
+          xlab = "Choice Type", ylab = "Spike Rate", ylim = c(min_spike_rate, max_spike_rate))
+}
+```
+
+
+```{r}
+library(dplyr)
+library(stats)
+# extract choice_type and spike_rate columns from each data frame in spike_rates_mouse and combine
+combined_data <- data.frame() # create an empty data frame
+for (i in 1:length(spike_rates_mouse)) {
+  mouse_name <- names(spike_rates_mouse)[i]
+  spike_rate_data <- spike_rates_mouse[[i]]$spike_rate
+  choice_type_data <- spike_rates_mouse[[i]]$choice_type
+  # create a temporary data frame for each mouse
+  temp_data <- data.frame(mouse_name = mouse_name, 
+                          spike_rate = spike_rate_data, 
+                          choice_type = choice_type_data)
+  # add the temporary data frame to the combined_data data frame
+  combined_data <- bind_rows(combined_data, temp_data)
+}
+```
+
+***
+
+# Data Integration
+
+clustering for spike counts over time
+```{r}
+# K- means
+# using the elbow method to find the optimal number of clusters
+set.seed(6)
+wcss = vector()
+for (i in 1:10) wcss[i] = sum(kmeans(spike_counts, i)$withinss)
+plot(1:10,
+     wcss,
+     type = 'b',
+     main = paste('The Elbow Method'),
+     xlab = 'Number of clusters',
+     ylab = 'WCSS')
+
+# perform K-means clustering
+set.seed(29)
+kmeans = kmeans(x = spike_counts, centers = 3)
+y_kmeans = kmeans$cluster
+
+# visualising the clusters
+library(cluster)
+clusplot(spike_counts,
+         y_kmeans,
+         lines = 0,
+         shade = TRUE,
+         color = TRUE,
+         labels = 2,
+         plotchar = FALSE,
+         span = TRUE,
+         main = paste('Clusters of spike counts'),
+         xlab = 'Spike Counts',
+         ylab = 'Time Bins')
+
+#hierarchical
+dendrogram = hclust(d = dist(spike_counts, method = 'euclidean'), method = 'ward.D')
+plot(dendrogram,
+     main = paste('Dendrogram'),
+     xlab = 'Spike Counts',
+     ylab = 'Euclidean distances')
+
+
+#fitting Hierarchical Clustering to the dataset
+y_hc = cutree(dendrogram, 3)
+
+# visualising the clusters
+library(cluster)
+clusplot(spike_counts,
+         y_hc,
+         lines = 0,
+         shade = TRUE,
+         color = TRUE,
+         labels= 2,
+         plotchar = FALSE,
+         span = TRUE)
+```
+
+```{r}
+result_df <- data.frame(session = integer(),
+                        trial_id = integer(),
+                        contrast_left = numeric(),
+                        contrast_right = numeric(),
+                        spikes = numeric(),
+                        feedback_type = character(),
+                        stringsAsFactors = FALSE)
+
+for (s in 1:length(session)) {
+
+  spks <- session[[s]]$spks
+  time <- session[[s]]$time
+
+  # extract the trial ID, feedback type, and number of trials for the current session
+  trial_ids <- session[[s]]$trial_id
+  feedback_types <- session[[s]]$feedback_type
+  num_trials <- length(trial_ids)
+
+  # loop through each unique combination of left and right contrasts
+  for (lc in unique(session[[s]]$contrast_left)) {
+    for (rc in unique(session[[s]]$contrast_right)) {
+      # Extract the indices of the trials that correspond to the current combination of left and right contrasts
+      trial_indices <- which(session[[s]]$contrast_left == lc & session[[s]]$contrast_right == rc)
+
+      # loop through each trial and fill in the spike count and feedback type information
+      for (j in 1:length(trial_indices)) {
+        trial_id <- trial_ids[trial_indices[j]]
+        spikes <- rowSums(spks[[trial_indices[j]]])
+        feedback_type <- feedback_types[trial_indices[j]]
+        
+        new_row <- data.frame(session = s,
+                              trial_id = trial_id,
+                              contrast_left = lc,
+                              contrast_right = rc,
+                              spikes = sum(spikes),
+                              feedback_type = feedback_type,
+                              stringsAsFactors = FALSE)
+
+        result_df <- rbind(result_df, new_row)
+      }
+    }
+  }
+}
+
+```
+
+
+```{r}
+library(cluster)
+# k-means
+cluster_data <- result_df[, c("contrast_left", "contrast_right", "spikes")]
+#elbow method
+set.seed(6)
+wcss = vector()
+wcss <- sapply(1:10, function(k) kmeans(cluster_data, centers = k)$tot.withinss)
+# plot the WCSS values against the number of clusters (k)
+plot(1:10, wcss, type = "b", pch = 19, frame = FALSE, xlab = "Number of Clusters (k)", ylab = "Within-Cluster Sum of Squares (WCSS)")
+# add elbow point indication
+wss_diff <- c(0, diff(wcss))
+elbow_point <- which(wss_diff < mean(wss_diff)) + 1
+points(elbow_point, wcss[elbow_point], col = "red", cex = 2, pch = 20)
+text(elbow_point, wcss[elbow_point], paste("Elbow point: k =", elbow_point), pos = 2)
+# k-means calculation
+kmeans_result <- kmeans(cluster_data, centers = 3)
+# Get the cluster assignments for each data point
+cluster_assignments <- kmeans_result$cluster
+# Add the cluster assignments to the result_df dataframe
+result_df$cluster_k <- cluster_assignments
+#plot
+clusplot(result_df,
+         cluster_assignments,
+         lines = 0,
+         shade = TRUE,
+         color = TRUE,
+         labels = 2,
+         plotchar = FALSE,
+         span = TRUE)
+
+
+# hierarchical clustering
+dist_matrix <- dist(result_df[, c("contrast_left", "contrast_right", "spikes")])
+hclust_res <- hclust(dist_matrix)
+# plot the dendrogram
+plot(hclust_res, main = "Hierarchical Clustering Dendrogram")
+# cut the dendrogram to obtain clusters
+num_clusters <- 2 # specify the desired number of clusters
+clusters <- cutree(hclust_res, k = num_clusters)
+# add the cluster information to the result_df
+result_df$cluster_h <- clusters
+# plot
+library(cluster)
+clusplot(result_df[, c("contrast_left", "contrast_right")], 
+         result_df$cluster_h, 
+         color = TRUE, 
+         labels = 2, 
+         lines = 0)
+```
+
+
+
