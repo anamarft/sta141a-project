@@ -1,0 +1,1362 @@
+---
+title: "Predictive Modeling of Mouse Behavioral Responses Using Neural Activity Data"
+author: "Anamar Flores 916976613"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H')
+```
+***
+## Abstract
+
+This project focuses on the analysis of task feedback and performance data and neural activity in mice engaged in a behavioral task. When presented with two visual stimuli, the mice are trained to turn a lever in the direction of the lower contrast stimulus. The objective is to develop a predictive model for feedback type based on integrated data from multiple sessions. The exploratory data analysis reveals a complex relationship between contrast levels of visual stimuli, spike rates of neurons in the visual cortex, and choice. Data integration and preprocessing techniques are employed to combine spike rate matrices and trial information, constructing a comprehensive data frame for modeling. A logistic regression model is trained to predict feedback type, achieving an average accuracy of 0.98. The results demonstrate the strong predictive power of the integrated data and selected variables. Overall, this project enhances our understanding of the underlying dynamics between behavior and neural activity.
+
+***
+## Introduction
+ 
+Animal behavior studies provide valuable insights into the mechanisms underlying decision-making. Advancements in neuroimaging techniques have enabled researchers to collect neural activity measurements while animals perform tasks, offering real-time exploration of the neural basis of behavior. In this project, we focus on analyzing a subset of data from experiments conducted by Steinmetz et al. (2019), where mice were presented with visual stimuli and required to make decisions based on the contrast levels of these stimuli.
+
+Our main objective in this project is to develop a predictive model that can accurately predict the outcome of each trial based on the neural activity data obtained from the mice's visual cortex. This model will allow us to understand the neural correlates of successful and failed behavioral responses and provide a deeper understanding of the underlying mechanisms involved in decision-making processes.
+
+To develop our predictive model, we begin by conducting exploratory data analysis (EDA) to understand the structure of the dataset, examine the neural activity during each trial, and observe changes across trials. Additionally, we investigate homogeneity and heterogeneity across sessions and mice. Based on the insights gained from EDA, we propose data integration techniques aimed at enhancing the predictive performance of our model by extracting shared patterns across sessions while addressing session-specific differences.
+
+***
+## Background
+
+The dataset used in this project comprises eighteen sessions from four mice: Cori, Forsmann, Hence, and Lederberg. These mice were selected from a population of mice that participated in behavioral experiments investigating the neural correlates of decision-making (Steinmetz et al., 2019). These experiments aimed to understand how neural activity in the visual cortex relates to decision-making processes. The selection of the mice and their inclusion in the dataset was based on specific criteria to ensure representative sampling from the larger population.
+
+During each session, data was collected through carefully designed experiments. The sampling mechanism involved presenting two visual stimuli on different sides of a chamber to the mice, and their neural responses were recorded during task performance. The stimuli were meticulously designed to manipulate contrast levels, providing controlled conditions for the study of decision-making processes. Success in the task was defined as the mice turning a lever to the left when the contrast level on the left stimulus was lower than that on the right stimulus.
+
+The recording of neural activity was done using spike trains, which capture the firing patterns of individual neurons over time. Spike trains provide valuable information about the timing and intensity of neuronal activity, enabling researchers to analyze the temporal dynamics and patterns of neural responses associated with decision-making. This sampling mechanism allowed for the collection of detailed neural activity data that forms the basis of our analysis.
+
+In addition to the neural activity data, the dataset includes information about the brain region in which each recorded neuron resides. This information provides valuable insights into the role of different cortical areas in decision-making processes. By analyzing the neural activity data in relation to the brain region information, researchers can gain a deeper understanding of the specific cortical regions involved in encoding and processing visual stimuli during decision-making tasks.
+
+Furthermore, the dataset provides information about the feedback type associated with each trial. The feedback type variable indicates whether each trial resulted in a successful outcome or a failure. This binary variable serves as the target variable for our predictive model, allowing us to build a model capable of accurately predicting the outcome of each trial based on the recorded neural activity.
+
+The careful selection of mice, the controlled experimental design, and the sampling mechanism used in data collection ensure that the dataset provides a representative and comprehensive understanding of the neural correlates of decision-making. These factors contribute to the robustness and reliability of our analysis and allow us to draw meaningful conclusions about the mechanisms underlying decision-making processes based on the neural activity recorded from the visual cortex.
+
+***
+## Exploratory Data Analysis
+
+### Dataset Overview
+
+The dataset consists of 18 sessions from four mice: Cori, Forsmann, Hence, and Lederberg. Each session contains several hundred trials, ranging from 114 to 447 trials, resulting in a total of 5081 trials. The dataset includes information about stimuli contrasts, neural activity, brain regions where each neuron resides, and feedback type (success or failure).
+
+The left and right contrasts in the stimuli can take values of 0.0, 0.25, 0.50, and 1.00, with increasing levels corresponding to higher contrast. There are a total of 16 unique stimuli conditions.
+
+Neural data was recorded from thousands of neurons in the visual cortex. The presence of a spike was recorded as either "1" or "0" in each of the 40 time bins for each trial. The number of neurons varies across sessions, ranging from 474 to 1172. Overall, the dataset consists of more than 652,000 rows of neural activity information.
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+library(dplyr)
+session <- list()
+all_session_data <- list()
+
+for (i in 1:18) {
+  session[[i]] <- readRDS(paste('/Users/anamar/Desktop/sessions/session', i, '.rds', sep=''))
+  session_data <- as.data.frame(session[[i]][1:3])
+  
+  # add trial ID column
+  session_data <- session_data %>% 
+  mutate(trial_id = i)
+  
+  # label choices as left, right, no-go, or none
+  session_data$choice <- ifelse(session_data$contrast_left > session_data$contrast_right &
+                                  session_data$feedback_type == "1", "right",
+                              ifelse(session_data$contrast_right > session_data$contrast_left & 
+                                       session_data$feedback_type == "1", "left",
+                              ifelse(session_data$contrast_left == 0 & session_data$contrast_right == 0 &
+                                          session_data$feedback_type == "1", "none", "NoGo")))
+  
+  # add pedestal and relative contrast columns
+  session_data <- session_data %>% 
+    mutate(pedestal = pmin(contrast_left, contrast_right),
+           rel_contrast = ifelse(contrast_left > contrast_right,
+                                 contrast_left - pedestal,
+                                 -(contrast_right - pedestal)))
+  # positive numbers indicating higher contrast on the right screen, and negative numbers for higher contrast on the left screen
+
+  all_session_data[[i]] <- session_data
+}
+all_session_data <- bind_rows(all_session_data)
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+library(tidyverse) 
+library(magrittr)   
+library(knitr) 
+library(dplyr)  
+n.session=length(session)
+
+meta <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  success_rate = rep(0,n.session)
+)
+
+
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=mean(tmp$feedback_type+1)/2;
+}
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2) 
+```
+<p style="text-align: center;">**Table 1**. Data structure across sessions.</p>
+
+### Summary Statistics
+
+Summary statistics were computed to gain insights into the neural activity recorded during the trials. The spike data represents the number of spikes recorded from all neurons across all 40 time bins per trial.
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+session <- vector("list", 18)
+for (i in 1:18) {
+  session[[i]] <- readRDS(paste('/Users/anamar/Desktop/sessions/session', i, '.rds', sep=''))
+  
+  n_trials <- length(session[[i]]$spks)
+  session[[i]]$trial_id <- 1:n_trials
+  
+  session[[i]]$session_number <- i
+
+  n_neurons <- length(session[[i]]$spks[[1]])
+}
+
+spike_rates_df <- data.frame(session = integer(),
+                             choice_type = character(),
+                             brain_region = character(),
+                             spike_rate = numeric())
+
+for (i in 1:length(session)) {
+  for (j in 1:length(session[[i]]$trial_id)) {
+
+    trial_id <- session[[i]]$trial_id[j]
+    feedback_type <- session[[i]]$feedback_type[j]
+    contrast_left <- session[[i]]$contrast_left[j]
+    contrast_right <- session[[i]]$contrast_right[j]
+    brain_area <- session[[i]]$brain_area[j]
+    spks <- session[[i]]$spks[[j]]
+    time <- session[[i]]$time[[j]]
+    
+    # determine the choice type based on the contrasts
+    if (contrast_left > 0 & contrast_right == 0) {
+      choice_type <- "Left"
+    } else if (contrast_left == 0 & contrast_right > 0) {
+      choice_type <- "Right"
+    } else if (contrast_left == 0 & contrast_right == 0) {
+      choice_type <- "NoGo"
+    } else {
+      choice_type <- "None"
+    }
+     # calculate the average spike rate for each brain region
+    brain_regions <- unique(session[[i]]$brain_area)
+    for (k in 1:length(brain_regions)) {
+      region_spks <- spks[brain_area == brain_regions[k], ]
+      region_spike_rate <- mean(rowSums(region_spks) / (length(time)))
+      spike_rates_df <- rbind(spike_rates_df,
+                              data.frame(session = i,
+                                         choice_type = choice_type,
+                                         brain_region = brain_regions[k],
+                                         spike_rate = region_spike_rate))
+    }
+  }
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+spike_rates_list <- list()
+mouse_names <- character()
+trial_numbers <- numeric()
+
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  
+  mouse_name <- current_session$mouse_name
+  num_trials <- length(current_session$trial_id)
+  
+  mouse_names <- c(mouse_names, rep(mouse_name, num_trials))
+  trial_numbers <- c(trial_numbers, 1:num_trials)
+  
+  # define the time bin size in seconds
+  time_bin_size <- 0.1
+  
+  # calculate the number of time bins based on the time bin size
+  max_trial_duration <- max(sapply(current_session$time, function(x) max(x) - min(x)))
+  num_time_bins <- ceiling(max_trial_duration / time_bin_size)
+  
+  # create vectors to store trial start and end times
+  trial_start_times <- sapply(current_session$time, function(x) min(x))
+  trial_end_times <- sapply(current_session$time, function(x) max(x))
+  
+  # create an empty matrix to store the spike rates
+  spike_rates <- matrix(0, nrow = length(current_session$trial_id), ncol = max(sapply(current_session$time, length)))
+  
+  # loop through each trial to calculate the spike rate for each time bin
+  for (i in 1:length(current_session$trial_id)) {
+    trial_time <- current_session$time[[i]]
+    trial_spks <- matrix(current_session$spks[[i]], nrow = length(trial_time), byrow = TRUE)
+    trial_start_time <- trial_start_times[i]
+    trial_end_time <- trial_end_times[i]
+    
+    # loop through each time bin in the trial
+    for (j in 1:length(trial_time)) {
+      # calculate the start and end time of the current time bin
+      bin_start_time <- trial_time[j] - time_bin_size / 2
+      bin_end_time <- trial_time[j] + time_bin_size / 2
+      
+      # make sure the time bin doesn't extend beyond the beginning or end of the trial
+      if (bin_start_time < trial_start_time) {
+        bin_start_time <- trial_start_time
+      }
+      if (bin_end_time > trial_end_time) {
+        bin_end_time <- trial_end_time
+      }
+      
+      # count the number of spikes in the current time bin for the current trial
+      num_spikes <- sum(trial_spks[j,][trial_time >= bin_start_time & trial_time < bin_end_time])
+      
+      # calculate the spike rate for the current time bin and trial
+      if (num_spikes == 0) {
+        spike_rate <- 0
+      } else {
+        spike_rate <- num_spikes / time_bin_size
+      }
+      
+      # store the spike rate in the spike_rates matrix
+      spike_rates[i, j] <- spike_rate
+    }
+  }
+  
+  spike_rates_list[[s]] <- spike_rates
+}
+
+# combine the spike rate matrices from the spike_rates_list into a single matrix
+combined_spike_rates <- do.call(rbind, spike_rates_list)
+
+# calculate the average spike rates across trials for each time bin
+avg_spike_rates <- rowMeans(combined_spike_rates)
+
+# calculate average spike rate
+average_spike_rate <- mean(avg_spike_rates)
+
+# calculate standard deviation
+standard_deviation <- sd(avg_spike_rates)
+
+# calculate minimum spike rate
+minimum_spike_rate <- min(avg_spike_rates)
+
+# calculate maximum spike rate
+maximum_spike_rate <- max(avg_spike_rates)
+
+# calculate range
+range_spike_rate <- max(avg_spike_rates) - min(avg_spike_rates)
+
+table_data <- tibble(
+  "Metric" = c("Average Spike Rate", "Standard Deviation", "Minimum Spike Rate", "Maximum Spike Rate", "Range"),
+  "Value" = c(average_spike_rate, standard_deviation, minimum_spike_rate, maximum_spike_rate, range_spike_rate)
+)
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+knitr::kable(table_data, format = "html", table.attr = "class='table table-striped'", digits = 2)
+```
+<p style="text-align: center;">**Table 2**. Summary Statistics for Spike Rate.</p>
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+plot(density(avg_spike_rates), col = "blue", xlab = "Spike Rate", ylab = "Density",
+     main = "Spike Rate Distribution")
+```
+<p style="text-align: center;">**Graph 1**. Density Plot of Spike Rates.</p>
+
+The average spike rate was calculated by determining the average number of spikes across neurons within each trial. The average spike rate across all trials in a session was found to be 69.1698 spikes per trial, with a standard deviation of 28.24829. The spike rates ranged from a minimum of 15 spikes per trial to a maximum of 173.5 spikes per trial. Notably, there was an outlier with an exceptionally high spike rate of 173.5 spikes per trial, which deviated from the overall distribution. The distribution of spike rates appeared unimodal, except for this outlier, as shown in the corresponding plot.
+
+### Neural Activity Data Visualization
+
+To gain further insights into the neural activity patterns during each trial, a heatmap was generated to visualize the average spike rate of all neurons across trials and time bins. In this heatmap, each row represents a trial, while each column corresponds to a time bin. Red represents high spike rates, and blue represents low spike rates.
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+heatmap(combined_spike_rates, Rowv = NA, Colv = NA, xlab = "Time Bin", ylab = "Trial",
+        main = "Average Spike Rate Heatmap", col = rev(colorRampPalette(c("blue", "white", "red"))(100)))
+```
+<p style="text-align: center;">**Graph 2**. Heatmap of Average Spike Rate Across Trials.</p>
+
+The presence of dark red in the first and last columns of the heatmap indicates high average spike rates in those time bins. This suggests that there is increased neural activity during the initial and final stages of the trials. The variability in the position of the blue period within each trial indicates that the period of low spike rates can occur either at the beginning or closer to the end of the trial.
+
+This variability in the timing of the blue period suggests that the level of neural activity during the stimulus presentation and/or decision-making processes may differ across trials. The trial-to-trial variability could be influenced by factors such as the specific characteristics of the stimuli or the mouse's engagement or attention during the task.
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+# Create an empty data frame to store spike rate data
+spike_rate_data <- data.frame(
+  Mouse_Name = character(),
+  Session = character(),
+  Trial = numeric(),
+  SpikeRate = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Iterate over each session
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  mouse_name <- current_session$mouse_name
+  
+  # Iterate over each trial in the session
+  for (i in 1:length(current_session$trial_id)) {
+    spike_rate <- mean(spike_rates_list[[s]][i, ])
+    
+    # Append the spike rate information to the data frame
+    spike_rate_data <- rbind(spike_rate_data, data.frame(
+      Mouse_Name = mouse_name,
+      Session = paste("Session", s),
+      Trial = i,
+      SpikeRate = spike_rate
+    ))
+  }
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+unique_mice <- unique(spike_rate_data$Mouse_Name)
+unique_sessions <- unique(spike_rate_data$Session)
+color_palette <- rainbow(length(unique_sessions))
+```
+To gain insights into the neural activity of mice during the experimental trials, we plotted the spike rate across trials for each mouse. The graph below illustrates the spike rate patterns over the course of the trials, with each line representing a different session. The graph is organized into separate panels, with each row representing a different mouse. 
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+ggplot(spike_rate_data, aes(x = Trial, y = SpikeRate, group = Session, color = Session)) +
+  geom_line() +
+  geom_point() +
+  facet_grid(Mouse_Name ~ ., scales = "free_y", space = "free_y") +
+  xlab("Trial") +
+  ylab("Spike Rate") +
+  ggtitle("Spike Rate Across Trials") +
+  theme_minimal() +
+  scale_color_manual(values = color_palette) +
+  scale_x_continuous(breaks = unique(spike_rate_data$Trial)) +
+  scale_y_continuous(expand = c(0, 0))
+```
+<p style="text-align: center;">**Graph 3**. Spike Rate Across Trials by Mouse.</p>
+
+In this graph, we can see distinct patterns in the spike rates across sessions for the mice Hench, Forsmann, Lederberg, and Cori. Notably, we observe considerable variability in the spike rates among these mice. Hench, Forsmann, and Lederberg display noticeable fluctuations in their spike rates throughout the trials. These mice exhibit spikes rates that vary widely across different trials, suggesting very diverse neural responses to the visual stimuli presented. Cori consistently exhibits a comparatively lower average spike rate across the trials.
+
+These disparities in spike rates suggest potential differences in neural processing and response patterns among the mice. This underscores the importance of normalization in our predictive model. Because each mouse exhibits its own unique range and variability in spike rates, normalizing the data will allow for fair and meaningful comparisons across mice. 
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+spike_rate_list <- list()
+
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  num_trials <- length(current_session$spks)
+  max_num_neurons <- 0
+  spike_rate_matrices <- list()
+
+  for (tr in 1:num_trials) {
+    spks <- current_session$spks[[tr]]
+    num_neurons <- nrow(spks)
+    
+    if (num_neurons > max_num_neurons) {
+      max_num_neurons <- num_neurons
+    }
+    
+    spike_rate_matrix <- matrix(0, nrow = num_neurons, ncol = 1)
+  
+    for (neuron in 1:num_neurons) {
+      spike_rate <- sum(spks[neuron, ] == 1) / num_time_bins
+      spike_rate_matrix[neuron, 1] <- spike_rate
+    }
+    spike_rate_matrices[[tr]] <- spike_rate_matrix
+  }
+
+  padded_spike_rate_matrices <- lapply(spike_rate_matrices, function(matrix) {
+    if (nrow(matrix) < max_num_neurons) {
+      padded_matrix <- matrix(0, nrow = max_num_neurons, ncol = 1)
+      padded_matrix[1:nrow(matrix), ] <- matrix
+      matrix <- padded_matrix
+    }
+    matrix
+  })
+  
+  spike_rate_matrix <- do.call(cbind, padded_spike_rate_matrices)
+  spike_rate_list[[s]] <- spike_rate_matrix
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+top_neurons_data <- data.frame(
+  Session = character(),
+  Neuron = numeric(),
+  Time = numeric(),
+  SpikeRate = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (s in 1:length(spike_rate_list)) {
+  spike_rate_matrix <- spike_rate_list[[s]]
+  top_neurons <- order(rowSums(spike_rate_matrix), decreasing = TRUE)[1]
+  time <- seq(1, ncol(spike_rate_matrix))
+  
+  for (neuron in top_neurons) {
+    spike_rate <- spike_rate_matrix[neuron, ]
+
+    top_neurons_data <- rbind(top_neurons_data, data.frame(
+      Session = paste("Session", s),
+      Neuron = neuron,
+      Time = time,
+      SpikeRate = spike_rate
+    ))
+  }
+}
+color_palette <- rainbow(18)
+```
+
+To further explore the neural activity during the decision-making process, we examined the spike rate profiles of the neurons exhibiting maximum activity in each session. We sampled the data at regular intervals of every 30 time points to reduce visual clutter.
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+ggplot(top_neurons_data, aes(x = Time, y = SpikeRate, group = Neuron, color = as.factor(Neuron))) +
+  geom_point(data = top_neurons_data %>% 
+               group_by(Neuron, Session) %>% 
+               filter(row_number() %% 30 == 0), 
+             size = 2) +
+  geom_line(data = top_neurons_data %>% 
+               group_by(Neuron, Session) %>% 
+               filter(row_number() %% 30 == 0), 
+             size = 0.5) +
+  xlab("Time") +
+  ylab("Spike Rate") +
+  ggtitle("Spike Rate of Maximum Activity Neurons Over Time") +
+  theme_minimal() +
+  scale_color_manual(values = rep(color_palette, length.out = num_neurons)) +
+  scale_x_continuous(breaks = unique(top_neurons_data$Time)) +
+  scale_y_continuous(expand = c(0, 0))
+```
+<p style="text-align: center;">**Graph 4**. Spike Rate Across Time of the Neurons with Maximum Activity in Each Session.</p>
+
+Graph 4 graph allows us to visualize the diversity in spike rate profiles among key neurons in each session. We observe a wide range of spike rates across individual neurons. This high spike rate range suggests that different neurons exhibit diverse levels of activity during the decision-making process. However, despite the wide range of spike rates, there is a noticeable overlap among the lines representing each neuron. This suggests that while the spike rates may vary across neurons, there are underlying temporal patterns that are shared between them.
+
+By incorporating the spike rate of these neurons as predictors in our model, we ensure that it focuses on the most relevant neural signals associated with successful or failed behavioral responses.
+
+### Data Visualization of Choice Probability
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+session <- list()
+all_session_data <- list()
+
+for (i in 1:18) {
+  session[[i]] <- readRDS(paste('/Users/anamar/Desktop/sessions/session', i, '.rds', sep=''))
+  session_data <- as.data.frame(session[[i]][1:3])
+  
+  session_data <- session_data %>% 
+    mutate(trial_id = i)
+  
+  # Label choices as left, right, no-go, or none
+  session_data$choice <- ifelse(session_data$contrast_left > session_data$contrast_right &
+                                  session_data$feedback_type == "1", "right",
+                                ifelse(session_data$contrast_right > session_data$contrast_left & 
+                                         session_data$feedback_type == "1", "left",
+                                       ifelse(session_data$contrast_left == 0 & session_data$contrast_right == 0 &
+                                                session_data$feedback_type == "1", "none", "NoGo")))
+  
+  session_data <- session_data %>% 
+    mutate(pedestal = pmin(contrast_left, contrast_right),
+           rel_contrast = ifelse(contrast_left > contrast_right,
+                                 contrast_left - pedestal,
+                                 -(contrast_right - pedestal)))
+  
+  all_session_data[[i]] <- session_data
+}
+all_session_data <- bind_rows(all_session_data)
+
+#new data frame with contrast_left, contrast_right, and choice columns
+contrast_data <- bind_rows(all_session_data) %>%
+  select(contrast_left, contrast_right, choice)
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+library(tidyr)
+library(ggplot2)
+
+prob_choice_line <- contrast_data %>%
+ mutate(pedestal = pmin(contrast_left, contrast_right),
+           rel_contrast = ifelse(contrast_left > contrast_right,
+                                 contrast_left - pedestal,
+                                 -(contrast_right - pedestal)))
+
+prob_choice_line <- prob_choice_line %>%
+  group_by(pedestal, rel_contrast) %>%
+  summarize(left_count = sum(choice == "left"),
+            right_count = sum(choice == "right"),
+            nogo_count = sum(choice == "NoGo"),
+            none_count = sum(choice == "none"),
+            total_count = n()) %>%
+  mutate(prob_left = left_count / (left_count + right_count + nogo_count + none_count),
+         prob_right = right_count / (left_count + right_count + nogo_count + none_count),
+         prob_nogo = nogo_count / (left_count + right_count + nogo_count + none_count),
+         prob_none = none_count / (left_count + right_count + nogo_count + none_count))
+
+prob_choice_long <- prob_choice_line %>%
+  gather(key = "choice", value = "probability", prob_left, prob_right, prob_nogo, prob_none)
+
+ggplot(prob_choice_long, aes(x = rel_contrast, y = probability, color = choice)) +
+  geom_line() +
+  facet_grid(~ choice, scales = "free_y", switch = "y") +
+  scale_color_manual(values = c("prob_left" = "blue", "prob_right" = "red", "prob_nogo" = "gray", "prob_none" = "black")) +
+  labs(x = "Relative Contrast", y = "Probability", title = "Probability of Each Choice by Relative Contrast")
+```
+<p style="text-align: center;">**Graph 5**. Probability of Each Choice by Relative Contrast.</p>
+
+This graph displays the relationship between the probability of each choice and the relative contrast of the stimuli. In this context, the term "pedestal" refers to the minimum contrast value between the left and right stimuli. Relative contrast is computed by subtracting the pedestal from the higher contrast value, with positive numbers indicating higher contrast on the right screen and negative numbers indicating higher contrast on the left screen.
+
+The graph reveals that the probability of selecting the left choice increases as the relative contrast becomes more negative, indicating a preference for lower contrast stimuli in making leftward decisions. Conversely, the probability of choosing the right option rises as the relative contrast becomes more positive, suggesting a bias towards higher contrast stimuli in making rightward decisions.
+
+Moreover, the probability of making a "nogo" choice, where no response is made, reaches its peak when the relative contrast is around zero, indicating a tendency to withhold a response when the stimuli have a balanced or similar contrast level. Similarly, the probability of making no choice also peaks at this point, further supporting the idea that the mice exhibit a preference for inaction when the relative contrast is neutral.
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+library(ggplot2)
+# plot the probability of left choice for each pedestal
+ggplot(prob_choice_line, aes(x = rel_contrast, y = prob_left)) +
+ geom_point() +
+  geom_smooth(method = "loess") +
+  facet_wrap(~ pedestal, nrow = 2, ncol = 2) +
+  labs(x = "Relative Contrast", y = "Probability of Left Choice") +
+  theme_bw() +
+  scale_y_continuous(limits = c(0, 1)) +
+  ggtitle("Probability of Left Choice Given Relative Contrast at Different Pedestal Values")
+
+# plot the probability of right choice for each pedestal
+ggplot(prob_choice_line, aes(x = rel_contrast, y = prob_right)) +
+ geom_point() +
+  geom_smooth(method = "loess") +
+  facet_wrap(~ pedestal, nrow = 2, ncol = 2) +
+  labs(x = "Relative Contrast", y = "Probability of Right Choice") +
+  theme_bw() +
+  scale_y_continuous(limits = c(0, 1)) +
+  ggtitle("Probability of Right Choice Given Relative Contrast at Different Pedestal Values")
+```
+<p style="text-align: center;">**Graph 6a-b**. Probabilities of Left and Right Choices at Different Pedestals.</p>
+
+Lastly, we investigate the probabilities of left and right choices given relative contrast at different pedestals. This analysis explores how the mice's choices are affected by the specific contrast levels of the stimuli, considering different baseline contrasts. In each panel, the black points represent the observed probabilities of left choice at different relative contrast values, while the smooth lines depict the underlying trend. The four panels correspond to different pedestal values, allowing us to examine how the relationship between relative contrast and left choice probability varies across these conditions. 
+
+The probability of left choice and the probability of right choice exhibit similar relationships with relative contrast. As we examine the panels, we see that for smaller pedestal values, such as 0 and 0.25, we observe that the probability of left choice increases as the relative contrast becomes more negative. This suggests that mice have a preference for leftward choices when the contrast on the left screen is relatively higher than that on the right screen, as we have seen before. 
+
+However, as the pedestal value increases (e.g., 0.5 and 0.75), we notice that the probability of left choice starts to decrease even at more negative relative contrast values. This indicates that, for these pedestal conditions, the mice exhibit a reduced preference for leftward choices.
+
+### Homogeneity and Heterogeneity Analysis
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+# Create an empty list to store session data
+session <- vector("list", 18)
+for (i in 1:18) {
+  session[[i]] <- readRDS(paste('/Users/anamar/Desktop/sessions/session', i, '.rds', sep=''))
+  
+  # Add trial ID column
+  n_trials <- length(session[[i]]$spks)
+  session[[i]]$trial_id <- 1:n_trials
+  
+  # Add session number column
+  session[[i]]$session_number <- i
+  
+  # Get the number of neurons
+  n_neurons <- length(session[[i]]$spks[[1]])
+}
+
+# Create an empty data frame to store the average spike rates
+spike_rates_df <- data.frame(session = integer(),
+                             choice_type = character(),
+                             brain_region = character(),
+                             spike_rate = numeric())
+
+# Loop through each session
+for (i in 1:length(session)) {
+  
+  # Loop through each trial in the session
+  for (j in 1:length(session[[i]]$trial_id)) {
+    
+    # Get the trial data
+    trial_id <- session[[i]]$trial_id[j]
+    feedback_type <- session[[i]]$feedback_type[j]
+    contrast_left <- session[[i]]$contrast_left[j]
+    contrast_right <- session[[i]]$contrast_right[j]
+    brain_area <- session[[i]]$brain_area[j]
+    spks <- session[[i]]$spks[[j]]
+    time <- session[[i]]$time[[j]]
+    #OR session_start_time <- sapply(session[[i]]$time, function(x) min(x))
+      #session_end_time <- sapply(session[[i]]$time, function(x) max(x))
+      #time = session_end_time-session_start_time
+    
+    # Determine the choice type based on the contrasts
+    if (contrast_left > 0 & contrast_right == 0) {
+      choice_type <- "Left"
+    } else if (contrast_left == 0 & contrast_right > 0) {
+      choice_type <- "Right"
+    } else if (contrast_left == 0 & contrast_right == 0) {
+      choice_type <- "NoGo"
+    } else {
+      choice_type <- "None"
+    }
+     # Calculate the average spike rate for each brain region
+    brain_regions <- unique(session[[i]]$brain_area)
+    for (k in 1:length(brain_regions)) {
+      region_spks <- spks[brain_area == brain_regions[k], ]
+      region_spike_rate <- mean(rowSums(region_spks) / (length(time)))
+      spike_rates_df <- rbind(spike_rates_df,
+                              data.frame(session = i,
+                                         choice_type = choice_type,
+                                         brain_region = brain_regions[k],
+                                         spike_rate = region_spike_rate))
+    }
+  }
+}
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center", out.width='100%', out.height='100%'}
+library(ggplot2)
+
+# Plot spike rate by trial within each session
+ggplot(spike_rates_df, aes(x = as.factor(session), y = spike_rate, color = brain_region)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ choice_type, nrow = 1) +
+  labs(title = "Spike Rates by Choice and Session",
+       x = "Session",
+       y = "Spike Rate",
+       color = "Brain Region",
+       subtitle = "Each line represents a brain region within a choice type") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, size = 16),
+        plot.subtitle = element_text(hjust = 0.5, size = 12),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "bottom",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12))
+```
+<p style="text-align: center;">**Graph 7**. Spike Rates by Choice and Session.</p>
+
+This plot helps us visualize the spike rates by choice and session, providing insights into the neural activity across different brain regions. Each vertical line represents a specific session within a choice type (Left, Right, NoGo, None).
+
+The plot reveals several important observations regarding the spike rates. Firstly, the spike rates appear to be relatively consistent across different choice types. This suggests that the neural activity associated with decision-making processes is not heavily biased towards a specific choice type but rather exhibits similar patterns regardless of the specific choice being made.
+
+However, it is important to note that there is considerable variability in spike rates both within and across sessions. Certain sessions, such as session 3 and 13, exhibit notably higher spike rates compared to others. This heightened activity in specific sessions might indicate increased neural engagement or heightened responsiveness during those particular experimental sessions. It could be attributed to various factors, such as the experimental conditions or the behavioral context during those sessions.
+
+Furthermore, when considering the sessions within each mouse, there is observed variability in spike rates across sessions. This indicates that the neural responses are not solely dependent on the mouse itself but are also influenced by factors specific to each experimental session. The variability across sessions suggests that there might be session-specific factors that impact the overall spike rates.
+
+Additionally, it is worth noting that the brain regions in the plot are dispersed, indicating a wide distribution of neural activity across different areas. However, certain sessions appear to exhibit more activity in specific brain regions. The localized activity in certain brain regions across sessions may highlight their potential significance in the decision-making circuitry.
+
+### Key Findings
+
+The exploratory data analysis (EDA) of the task performance data and neural activity reveals several key findings. Firstly, as the contrast levels increase, there is an overall increase in the probability of making a left choice, accompanied by a decrease in the probability of making a right choice. This effect is observed consistently across different sessions and mice. 
+
+Examining the probability of choice by session and relative contrast reveals session-specific and mouse-specific factors influencing decision-making. Spike rates analysis further highlights the variability of neural activity across sessions and brain regions. We observe a wide range of spike rates across individual neurons, indicating heterogeneity in their activity levels. Furthermore, when analyzing the spike rate across time of the neurons with maximum activity in each session, we observe that each line representing a neuron shows high variability over time. However, there is also high overlap between the lines, which could be due to similar temporal patterns and average spike rate for maximal activity neurons.
+
+Moreover, the spike rate across trials, separated by mouse, reveals substantial variation in neural activity. We notice high variability in the spike rate across sessions for Hench, Forsmann, and Lederberg, while the average spike rate across trials for Cori appears to be the smallest. This highlights the importance of normalizing the spike rate data when constructing our predictive model, as the range of spike rates across individual neurons and mice can have a significant impact on the model's performance.
+
+These findings emphasize the need for data integration techniques to capture shared patterns across sessions and address session-specific differences. By incorporating the spike rate of the neurons with maximum activity as predictors in our model, we can harness their unique temporal patterns to improve the accuracy of our predictions. Additionally, integrating information from the spike rate across trials, separated by mouse, allows us to account for the variability across individual neurons and mice, enhancing the generalizability of our predictive model.
+
+Building upon the key findings from the exploratory data analysis (EDA) in part 1, we now turn our attention to data integration in part 2. In this phase, we aim to uncover the relationships and interactions between different variables, such as behavior, neural activity, and experimental conditions, by integrating the available data sources.
+
+## Data Integration
+
+In Part 2 of our project, the objective was to integrate data from multiple sessions in order to facilitate information sharing across sessions and improve prediction performance in Part 3. We explored various clustering techniques to create meaningful groups based on the available variables.
+
+Initially, we attempted clustering using k-means and hierarchical clustering with spike counts over time. However, the clusters obtained showed significant overlap, making them less meaningful for our analysis. We realized that clustering spike counts alone may not be sufficient for effectively grouping the data. 
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+# duration b/w consecutive time points
+session1 <- session[[1]]
+time_diffs <- diff(as.numeric(unlist(session1$time)))
+time_bin_size <- 100
+
+# cumulative sum of the time differences
+cum_time_diffs <- c(0, cumsum(time_diffs))
+
+# total session time (s)
+session_time <- cum_time_diffs[length(cum_time_diffs)]
+
+# number of time bins in the session
+num_time_bins <- ceiling(session_time / time_bin_size)
+
+# min and max time points
+min_time <- min(unlist(session1$time))
+max_time <- max(unlist(session1$time))
+
+# define the start and end times of each time bin
+bin_start_times <- seq(min_time, max_time, by = time_bin_size)
+bin_end_times <- c(bin_start_times[-1], max_time + 1)
+
+spike_counts_list <- list()
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  
+  time_diffs <- diff(as.numeric(unlist(current_session$time)))
+  time_bin_size <- 100
+  cum_time_diffs <- c(0, cumsum(time_diffs))
+  session_time <- cum_time_diffs[length(cum_time_diffs)]
+  num_time_bins <- ceiling(session_time / time_bin_size)
+  
+  min_time <- min(unlist(current_session$time))
+  max_time <- max(unlist(current_session$time))
+  
+  bin_start_times <- seq(min_time, max_time, by = time_bin_size)
+  bin_end_times <- c(bin_start_times[-1], max_time + 1)
+
+  spike_counts <- matrix(0, nrow = nrow(current_session$spks[[1]]), ncol = num_time_bins)
+  
+  for (tr in 1:length(current_session$spks)) {
+    for (i in 1:nrow(current_session$spks[[tr]])) {
+      for (j in 1:num_time_bins) {
+        bin_start_time <- bin_start_times[j]
+        bin_end_time <- bin_end_times[j]
+
+        num_spikes <- sum(current_session$spks[[tr]][i,][current_session$time[[tr]] >= bin_start_time & current_session$time[[tr]] < bin_end_time])
+
+        spike_counts[i, j] <- spike_counts[i, j] + num_spikes
+      }
+    }
+  }
+  
+  spike_counts_list[[s]] <- spike_counts
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide', include = FALSE, message=FALSE}
+# k- means
+# elbow method
+set.seed(6)
+wcss = vector()
+for (i in 1:10) wcss[i] = sum(kmeans(spike_counts, i)$withinss)
+plot(1:10,
+     wcss,
+     type = 'b',
+     main = paste('The Elbow Method'),
+     xlab = 'Number of clusters',
+     ylab = 'WCSS')
+
+set.seed(29)
+kmeans = kmeans(x = spike_counts, centers = 3)
+y_kmeans = kmeans$cluster
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+# visualising the clusters
+library(cluster)
+clusplot(spike_counts,
+         y_kmeans,
+         lines = 0,
+         shade = TRUE,
+         color = TRUE,
+         labels = 2,
+         plotchar = FALSE,
+         span = TRUE,
+         main = paste('Clusters of spike counts'),
+         xlab = 'Spike Counts',
+         ylab = 'Time Bins')
+```
+<p style="text-align: center;">**Graph 8**. K-means Clustering of Spike Counts.</p>
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+#hierarchical
+dendrogram = hclust(d = dist(spike_counts, method = 'euclidean'), method = 'ward.D')
+plot(dendrogram,
+     main = paste('Dendrogram'),
+     xlab = 'Spike Counts',
+     ylab = 'Euclidean distances')
+y_hc = cutree(dendrogram, 3)
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+library(cluster)
+clusplot(spike_counts,
+         y_hc,
+         lines = 0,
+         shade = TRUE,
+         color = TRUE,
+         labels= 2,
+         plotchar = FALSE,
+         span = TRUE)
+```
+<p style="text-align: center;">**Graph 9a-b**. Hierarchical Clustering of Spike Counts.</p>
+
+To capture more relevant information, we decided to incorporate spike rate, contrast left, and contrast right variables into the clustering process. However, we discovered that traditional clustering techniques like k-means typically require numerical variables as inputs. Our attempt to cluster using these variables alone proved to be incomprehensible. Understanding the limitations of clustering with categorical variables, we conducted further research to explore clustering techniques specifically designed for such variables. We discovered that applying clustering directly to categorical variables may yield less meaningful results, leading us to reconsider the approach. As our ultimate goal is to build a predictive model with high accuracy, it is crucial to ensure that the clustering approach improves the model's predictive capabilities. If clustering does not contribute to a well-fitted model, there is no justification for retaining clusters in the predictive model.
+
+To integrate data from all sessions, we decided to construct a data frame that captures the essential information of each trial. We combined spike rate matrices, identifying the most active neurons, and creating a data frame with trial information for the top neurons in all sessions. The trial information included mouse name, session number, trial number, left contrast, right contrast, pedestal, relative contrast, choice (left, right, nogo, or none), feedback type, spike rate of the top three neurons with maximum activity in each session, along with the brain region it resides in and the rate's normalized value. To prepare the data for modeling, we performed additional preprocessing steps. We normalized spike rate values to ensure comparability across different sessions by subtracting the minimum value for spike rate and dividing by the range of values. Additionally, in order to make the feedback type variable suitable for predictive modeling, we applied appropriate data transformations or labeling. This step ensured that the feedback type variable aligned with the coding requirements.
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+spike_rate_list <- list()
+
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  
+  num_trials <- length(current_session$spks)
+  max_num_neurons <- 0
+
+  # create a list to store the spike rate matrices for each trial in the session
+  spike_rate_matrices <- list()
+
+  for (tr in 1:num_trials) {
+    spks <- current_session$spks[[tr]]
+    num_neurons <- nrow(spks)
+    
+    # update the maximum number of neurons
+    if (num_neurons > max_num_neurons) {
+      max_num_neurons <- num_neurons
+    }
+    
+    # calculate the spike rate matrix for the current trial
+    spike_rate_matrix <- matrix(0, nrow = num_neurons, ncol = 1)
+    
+    # calculate the spike rate for each neuron in the current trial
+    for (neuron in 1:num_neurons) {
+      # calculate the spike rate for the current neuron in the current trial
+      spike_rate <- sum(spks[neuron, ] == 1) / num_time_bins
+
+      spike_rate_matrix[neuron, 1] <- spike_rate
+    }
+    spike_rate_matrices[[tr]] <- spike_rate_matrix
+  }
+  
+  # pad the spike rate matrices to have the same number of rows (neurons)
+  padded_spike_rate_matrices <- lapply(spike_rate_matrices, function(matrix) {
+    if (nrow(matrix) < max_num_neurons) {
+      padded_matrix <- matrix(0, nrow = max_num_neurons, ncol = 1)
+      padded_matrix[1:nrow(matrix), ] <- matrix
+      matrix <- padded_matrix
+    }
+    matrix
+  })
+  
+  spike_rate_matrix <- do.call(cbind, padded_spike_rate_matrices)
+  
+  spike_rate_list[[s]] <- spike_rate_matrix
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+most_active_neurons <- vector("integer", length = length(spike_rate_list))
+for (s in 1:length(spike_rate_list)) {
+  spike_rate_matrix <- spike_rate_list[[s]]
+  total_spike_rates <- rowSums(spike_rate_matrix)
+  
+  # find the index of the most active neuron
+  most_active_neuron_index <- which.max(total_spike_rates)
+
+  most_active_neurons[s] <- most_active_neuron_index
+}
+
+# print?
+for (s in 1:length(most_active_neurons)) {
+  cat("Session", s, "- Most Active Neuron:", most_active_neurons[s], "\n")
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+trial_info_list <- list()
+
+# number of top neurons to consider
+num_top_neurons <- 3
+
+for (s in 1:length(spike_rate_list)) {
+  spike_rate_matrix <- spike_rate_list[[s]]
+  total_spike_rates <- rowSums(spike_rate_matrix)
+  
+  # find the indices of the top neurons
+  top_neuron_indices <- order(total_spike_rates, decreasing = TRUE)[1:num_top_neurons]
+  
+  current_session <- session[[s]]
+  
+  # get the trial information for the top neurons in the current session
+  trial_info <- data.frame(
+    mouse_name = current_session$mouse_name,  
+    session = s,  
+    trial_id = current_session$trial_id,
+    contrast_left = current_session$contrast_left,
+    contrast_right = current_session$contrast_right,
+    pedestal = pmin(current_session$contrast_left, current_session$contrast_right),
+    rel_contrast = ifelse(current_session$contrast_left > current_session$contrast_right,
+                           current_session$contrast_left - pmin(current_session$contrast_left, current_session$contrast_right),
+                           -(current_session$contrast_right - pmin(current_session$contrast_left, current_session$contrast_right))),
+    choice = ifelse(current_session$contrast_left > current_session$contrast_right &
+                      current_session$feedback_type == "1", "right",
+                    ifelse(current_session$contrast_right > current_session$contrast_left & 
+                             current_session$feedback_type == "1", "left",
+                           ifelse(current_session$contrast_left == 0 & current_session$contrast_right == 0 &
+                                    current_session$feedback_type == "1", "none", "NoGo"))),
+    feedback_type = current_session$feedback_type
+  )
+  
+  # add columns for spike rates of the top neurons
+  for (i in 1:num_top_neurons) {
+    neuron_index <- top_neuron_indices[i]
+    spike_rate_col <- paste0("spike_rate_", i)
+    trial_info[, spike_rate_col] <- spike_rate_matrix[neuron_index, ]
+    
+    # get the brain area for the current neuron
+    brain_area <- current_session$brain_area[neuron_index]
+    
+    # add a column for the brain area of the current neuron
+    brain_area_col <- paste0("brain_area_", i)
+    trial_info[, brain_area_col] <- brain_area
+  }
+  
+  trial_info_list[[s]] <- trial_info
+}
+
+trial_info_combined <- do.call(rbind, trial_info_list)
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+#scale
+# identify the minimum and maximum spike rates across the three spike rate columns
+min_spike_rate <- min(trial_info_combined[, c("spike_rate_1", "spike_rate_2", "spike_rate_3")])
+max_spike_rate <- max(trial_info_combined[, c("spike_rate_1", "spike_rate_2", "spike_rate_3")])
+
+# normalize the spike rates
+trial_info_combined$spike_rate_1_normalized <- (trial_info_combined$spike_rate_1 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+trial_info_combined$spike_rate_2_normalized <- (trial_info_combined$spike_rate_2 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+trial_info_combined$spike_rate_3_normalized <- (trial_info_combined$spike_rate_3 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+print(trial_info_combined)
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+trial_info_combined$feedback_type <- ifelse(trial_info_combined$feedback_type == 1, 1, 0)
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+library(knitr)
+kable(head(trial_info_combined, 6), format = "html", table.attr = "class='table table-striped'", digits = 3)
+```
+<p style="text-align: center;">**Table 3**. Head of Integration Data Table.</p>
+
+## Predictive Modeling
+
+### Building the Model
+
+In Part 3, we aimed to build a predictive model using the integrated data from the previous section to predict the feedback type based on the available variables. We selected a logistic regression model as our statistical approach. Logistic regression is well-suited for binary classification tasks, such as predicting the feedback type in our dataset.
+
+The logistic regression model estimates the probability of a trial belonging to a specific feedback type based on the recorded neural activity and other variables in $trial_info_combined$. The model parameters allow us to interpret the relationship between the predictors and the probability of a successful outcome. Assumptions of logistic regression include  the linearity of the predictors and the absence of multicollinearity.
+
+To assess the relationship between the predictors and the target variable, as well as the presence of multicollinearity, we examined the correlation coefficients among the variables in trial_info_combined.
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+correlations <- cor(trial_info_combined[, c("contrast_left", "contrast_right", "pedestal", "rel_contrast", "spike_rate_1",  "spike_rate_1_normalized", "spike_rate_2", "spike_rate_2_normalized", "spike_rate_3", "spike_rate_3_normalized")], trial_info_combined$feedback_type)
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+print(correlations)
+```
+<p style="text-align: center;">**Table 4**. Correlations of predictors to feedback type.</p>
+
+The correlation coefficients for most predictors are relatively small, indicating weak linear relationships. 
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+cor_matrix <- cor(trial_info_combined[, c("contrast_left", "contrast_right", "pedestal", "rel_contrast", "spike_rate_1",  "spike_rate_1_normalized", "spike_rate_2", "spike_rate_2_normalized", "spike_rate_3", "spike_rate_3_normalized")])
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+heatmap(cor_matrix, cmap = colorRampPalette(c("blue", "white", "red")))
+```
+<p style="text-align: center;">**Table 5**. Heatmap of the Correlation Matrix.</p>
+
+The variables contrast_left and contrast_right have a negative correlation of approximately -0.11, indicating a weak negative relationship between them. The variables contrast_left and rel_contrast have a strong positive correlation of approximately 0.73, indicating a strong positive relationship between them. The variables spike_rate_1 and spike_rate_1_normalized have a perfect positive correlation of 1. This is expected since spike_rate_1_normalized is derived from spike_rate_1 using a normalization process. The variables spike_rate_1 and spike_rate_2 have a positive correlation of approximately 0.44, indicating a moderate positive relationship between them.
+
+These correlation coefficients provide insights into the linear relationships between the predictors and can help identify potential multicollinearity, which refers to high correlations between predictors. Multicollinearity can pose challenges in logistic regression models, as it can affect the stability and interpretability of the coefficient estimates. The variables contrast_left and contrast_right displayed a weak negative correlation of approximately -0.11, indicating a slight inverse relationship. In contrast, contrast_left and rel_contrast exhibited a strong positive correlation of approximately 0.73, suggesting a substantial positive association. Furthermore, spike_rate_1 and spike_rate_2 showed a moderate positive correlation of approximately 0.44, suggesting a moderate positive relationship. We keep these relationships in mind as we progress through the model building.
+
+To evaluate the predictive performance of our model, we employed a 5-fold cross-validation approach. This approach provides an unbiased estimate of the model's performance by repeatedly dividing the data into five subsets. In each iteration, one fold is used as the test set, while the remaining four folds are combined and used as the training set. This process is repeated five times, with each fold serving as the test set once.
+
+The use of cross-validation allows us to assess the generalizability of our model across different subsets of the data. By averaging the performance metrics obtained from each fold, such as accuracy and confusion matrices.
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+set.seed(141)
+
+# num of folds for cross-validation
+num_folds <- 5
+
+# vectors to evaluate model
+accuracies <- vector("numeric", length = num_folds)
+confusion_matrices <- vector("list", length = num_folds)
+
+# index
+indices <- 1:nrow(trial_info_combined)
+
+# shuffle
+shuffled_indices <- sample(indices)
+
+#  number of samples in each fold
+fold_size <- floor(nrow(trial_info_combined) / num_folds)
+
+# cross-validation
+for (fold in 1:num_folds) {
+  # test indices for the current fold
+  test_indices <- shuffled_indices[((fold - 1) * fold_size + 1):(fold * fold_size)]
+  
+  # set training indices
+  train_indices <- setdiff(shuffled_indices, test_indices)
+  
+  # split the data into train and test
+  train_data <- trial_info_combined[train_indices, ]
+  test_data <- trial_info_combined[test_indices, ]
+  
+  # fit logistic regression model to train
+  model <- glm(feedback_type ~.,
+               data = train_data, family = binomial)
+  
+  # predictions w trained model
+  test_predictions <- predict(model, newdata = test_data, type = "response")
+  
+  # convert predicted probs
+  test_predictions <- ifelse(test_predictions > 0.5, "1", "0")
+  
+  # accuracy calculation
+  accuracy <- mean(test_predictions == test_data$feedback_type)
+  accuracies[fold] <- accuracy
+  # confusion matrix
+  confusion_matrix <- table(Actual = test_data$feedback_type, Predicted = test_predictions)
+  confusion_matrices[[fold]] <- confusion_matrix
+}
+```
+
+The logistic regression model was fitted to the training data using the glm function, with the feedback type as the response variable and all other variables in the integrated data table as predictors. We chose the binomial family due to the binary nature of the response variable. The trained model was then used to make predictions on the test data.
+
+To assess the model's performance, we calculated the accuracy for each fold by comparing the predicted feedback type with the actual feedback type in the test data. The accuracy represents the proportion of correct predictions. We also constructed confusion matrices to provide a detailed breakdown of the model's predictions. The confusion matrices show the number of correct and incorrect predictions.
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+mean_accuracy <- mean(accuracies)
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+# overall confusion matrix
+overall_confusion_matrix <- Reduce(`+`, confusion_matrices)
+
+# print!
+cat("Average Accuracy:", mean_accuracy, "\n\n")
+cat("Overall Confusion Matrix:\n")
+print(overall_confusion_matrix)
+```
+<p style="text-align: center;">**Table 6**. Overall Confusion Matrix.</p>
+
+The average accuracy across all folds was found to be 0.944, indicating a high level of predictive performance. Furthermore, we examined the overall confusion matrix, which combines the results from all folds. The matrix revealed that out of 1473 instances where the actual feedback type was 0, the model correctly predicted 1375 instances (true negatives), but misclassified 98 instances (false positives). Similarly, out of 3607 instances where the actual feedback type was 1, the model correctly predicted 3422 instances (true positives), but misclassified 185 instances (false negatives).
+
+In conclusion, our logistic regression model demonstrated promising predictive performance. This indicates that the integrated data and the selected variables have strong predictive power for determining the feedback type.
+
+### Test Sets: Prediction Performance
+
+Now we turn to the test sets to evaluate the performance of our predictive model. We use two independent test sets consisting of 100 trials each. These test sets have been randomly selected from Session 1 and Session 18 of the dataset. By using separate test sets from different sessions, we can assess the generalizability of our model across different experimental conditions and time points.
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+library(dplyr)
+
+session <- vector("list", 2)
+for (i in 1:2) {
+  session[[i]] <- readRDS(paste('/Users/anamar/Desktop/test/test', i, '.rds', sep=''))
+}
+
+spike_rate_list <- list()
+
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  
+  num_trials <- length(current_session$spks)
+  
+  # initialize the maximum number of neurons to 0
+  max_num_neurons <- 0
+
+  spike_rate_matrices <- list()
+
+  for (tr in 1:num_trials) {
+    spks <- current_session$spks[[tr]]
+    
+    num_neurons <- nrow(spks)
+    
+    # update the maximum number of neurons 
+    if (num_neurons > max_num_neurons) {
+      max_num_neurons <- num_neurons
+    }
+    
+    # calculate the spike rate matrix for the current trial
+    spike_rate_matrix <- matrix(0, nrow = num_neurons, ncol = 1)
+    
+    # calculate the spike rate for each neuron in the current trial
+    for (neuron in 1:num_neurons) {
+      # calculate the spike rate for the current neuron in the current trial
+      spike_rate <- sum(spks[neuron, ] == 1) / num_time_bins
+      
+      # store the spike rate in the matrix
+      spike_rate_matrix[neuron, 1] <- spike_rate
+    }
+    
+    # store the spike rate matrix for the current trial
+    spike_rate_matrices[[tr]] <- spike_rate_matrix
+  }
+  
+  # pad the spike rate matrices to have the same number of rows (neurons)
+  padded_spike_rate_matrices <- lapply(spike_rate_matrices, function(matrix) {
+    if (nrow(matrix) < max_num_neurons) {
+      padded_matrix <- matrix(0, nrow = max_num_neurons, ncol = 1)
+      padded_matrix[1:nrow(matrix), ] <- matrix
+      matrix <- padded_matrix
+    }
+    matrix
+  })
+
+  spike_rate_matrix <- do.call(cbind, padded_spike_rate_matrices)
+  
+  spike_rate_list[[s]] <- spike_rate_matrix
+}
+
+# create a vector to store the most active neuron for each session
+most_active_neurons <- vector("integer", length = length(spike_rate_list))
+
+for (s in 1:length(spike_rate_list)) {
+  spike_rate_matrix <- spike_rate_list[[s]]
+  
+  # calculate the total spike rate for each neuron in the session
+  total_spike_rates <- rowSums(spike_rate_matrix)
+  
+  most_active_neuron_index <- which.max(total_spike_rates)
+  
+  most_active_neurons[s] <- most_active_neuron_index
+}
+
+# create a list to store the trial information for the most active neurons in each session
+trial_info_list <- list()
+
+# number of top neurons to consider 
+num_top_neurons <- 3
+
+for (s in 1:length(spike_rate_list)) {
+  # get the spike rate matrix for the current session
+  spike_rate_matrix <- spike_rate_list[[s]]
+  
+  # calculate the total spike rate for each neuron in the session
+  total_spike_rates <- rowSums(spike_rate_matrix)
+  
+  # find the indices of the top neurons
+  top_neuron_indices <- order(total_spike_rates, decreasing = TRUE)[1:num_top_neurons]
+  
+  # Get the current session
+  current_session <- session[[s]]
+  
+# Create a sequence of trial numbers from 1 to the total number of trials in each session
+trial_numbers <- seq_len(length(current_session$spks))
+
+# Modify the trial_info data frame to use the trial_numbers as the trial_id
+trial_info <- data.frame(
+  mouse_name = current_session$mouse_name, 
+  session = s,  
+  trial_id = trial_numbers,
+  contrast_left = current_session$contrast_left,
+  contrast_right = current_session$contrast_right,
+  pedestal = pmin(current_session$contrast_left, current_session$contrast_right),
+  rel_contrast = ifelse(current_session$contrast_left > current_session$contrast_right,
+                         current_session$contrast_left - pmin(current_session$contrast_left, current_session$contrast_right),
+                         -(current_session$contrast_right - pmin(current_session$contrast_left, current_session$contrast_right))),
+  choice = ifelse(current_session$contrast_left > current_session$contrast_right &
+                    current_session$feedback_type == "1", "right",
+                  ifelse(current_session$contrast_right > current_session$contrast_left & 
+                           current_session$feedback_type == "1", "left",
+                         ifelse(current_session$contrast_left == 0 & current_session$contrast_right == 0 &
+                                  current_session$feedback_type == "1", "none", "NoGo"))),
+  feedback_type = current_session$feedback_type
+)
+  
+  # add columns for spike rates of the top neurons
+# add columns for spike rates of the top neurons
+for (i in 1:num_top_neurons) {
+  neuron_index <- top_neuron_indices[i]
+  spike_rate_col <- paste0("spike_rate_", i)
+  trial_info[, spike_rate_col] <- spike_rate_matrix[neuron_index, ]
+  
+  # get the brain area for the current neuron
+  brain_area <- current_session$brain_area[neuron_index]
+  
+  # add a column for the brain area of the current neuron
+  brain_area_col <- paste0("brain_area_", i)
+  trial_info[, brain_area_col] <- brain_area
+
+  }
+  
+  # add the trial information for the top neurons in the current session to the list
+  trial_info_list[[s]] <- trial_info
+}
+
+# combine all session trial information data frames into a single data frame
+trial_info_combined <- do.call(rbind, trial_info_list)
+
+#scale
+# identify the minimum and maximum spike rates across the three spike rate columns
+min_spike_rate <- min(trial_info_combined[, c("spike_rate_1", "spike_rate_2", "spike_rate_3")])
+max_spike_rate <- max(trial_info_combined[, c("spike_rate_1", "spike_rate_2", "spike_rate_3")])
+
+# normalize the spike rates
+trial_info_combined$spike_rate_1_normalized <- (trial_info_combined$spike_rate_1 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+trial_info_combined$spike_rate_2_normalized <- (trial_info_combined$spike_rate_2 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+trial_info_combined$spike_rate_3_normalized <- (trial_info_combined$spike_rate_3 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+print(trial_info_combined)
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+set.seed(123)
+test_predictions <- predict(model, newdata = trial_info_combined, type = "response")
+test_predictions <- ifelse(test_predictions > 0.5, "1", "0")
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+# function to calculate the confusion matrix
+calculateConfusionMatrix <- function(actual, predicted) {
+  TP <- sum(actual == "1" & predicted == "1")
+  TN <- sum(actual == "0" & predicted == "0")
+  FP <- sum(actual == "0" & predicted == "1")
+  FN <- sum(actual == "1" & predicted == "0")
+  
+  confusion_matrix <- matrix(c(TP, FN, FP, TN), nrow = 2, dimnames = list(Actual = c("1", "0"), Predicted = c("1", "0")))
+  
+  return(confusion_matrix)
+}
+
+# function to calculate accuracy
+calculateAccuracy <- function(confusion_matrix) {
+  TP <- confusion_matrix[1, 1]
+  TN <- confusion_matrix[2, 2]
+  FP <- confusion_matrix[2, 1]
+  FN <- confusion_matrix[1, 2]
+  
+  accuracy <- (TP + TN) / (TP + TN + FP + FN)
+  
+  return(accuracy)
+}
+
+# function to calculate precision
+calculatePrecision <- function(confusion_matrix) {
+  TP <- confusion_matrix[1, 1]
+  FP <- confusion_matrix[2, 1]
+  
+  precision <- TP / (TP + FP)
+  
+  return(precision)
+}
+
+# function to calculate recall
+calculateRecall <- function(confusion_matrix) {
+  TP <- confusion_matrix[1, 1]
+  FN <- confusion_matrix[1, 2]
+  
+  recall <- TP / (TP + FN)
+  
+  return(recall)
+}
+
+# function to calculate F1 score
+calculateF1Score <- function(confusion_matrix) {
+  precision <- calculatePrecision(confusion_matrix)
+  recall <- calculateRecall(confusion_matrix)
+  
+  f1_score <- 2 * precision * recall / (precision + recall)
+  
+  return(f1_score)
+}
+
+# calculate the confusion matrix
+confusion_matrix <- calculateConfusionMatrix(trial_info_combined$feedback_type, test_predictions)
+print(confusion_matrix)
+
+# calculate accuracy
+accuracy <- calculateAccuracy(confusion_matrix)
+print(accuracy)
+
+# calculate precision
+precision <- calculatePrecision(confusion_matrix)
+print(precision)
+
+# calculate recall
+recall <- calculateRecall(confusion_matrix)
+print(recall)
+
+# calculate F1 score
+f1_score <- calculateF1Score(confusion_matrix)
+print(f1_score)
+```
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+library(tidyverse) 
+library(magrittr)   
+library(knitr) 
+library(dplyr)  
+kable(confusion_matrix, format = "html", table.attr = "class='table table-striped'", digits = 2)
+```
+<p style="text-align: center;">**Table 7**. Confusion Matrix (Test Data).</p>
+
+```{r, echo=FALSE, warning=FALSE,  message=FALSE, tab.align = "center"}
+library(tidyverse) 
+library(magrittr)   
+library(knitr) 
+library(dplyr)  
+
+kable(data.frame(Accuracy = accuracy, Precision = precision, Recall = recall, F1_Score = f1_score),
+                       format = "html", table.attr = "class='table table-striped'", digits = 2)
+```
+<p style="text-align: center;">**Table 8**. Metrics (Test Data).</p>
+
+The performance of our predictive model yielded good results, showing its effectiveness in accurately predicting trial outcomes based on neural activity data.Based on the provided confusion matrix, out of 143 instances where the actual feedback type was 1, the model correctly predicted 142 instances (true positives), but misclassified 1 instance as 0 (false negative). Similarly, out of 57 instances where the actual feedback type was 0, the model correctly predicted 54 instances (true negatives), but misclassified 3 instances as 1 (false positives).
+
+The model achieved an accuracy of 0.98, indicating that our model achieved an overall correct prediction rate of 98%, which is a high overall correctness in its predictions. Additionally, the precision of our model is also high at 0.98. Precision represents the proportion of true positive predictions out of all positive predictions made by the model, meaning that our model accurately identified 98% of the successful outcomes among the predicted positive instances. With a recall of 0.99, our model also effectively captured 99% of the true positive instances, indicating a high sensitivity to successful outcomes. Furthermore, the F1 score of 0.99, which combines precision and recall, emphasizes the balanced assessment of the model's performance, considering both the accurate prediction rate and the ability to accurately identify true positives. 
+
+The choice of accuracy, precision, recall, and the F1 score as evaluation criteria was justified by their relevance to our project's objectives and what was discussed in class. The inclusion of a confusion matrix in our evaluation methodology strengthens the assessment of our model's performance by providing a detailed breakdown of the true positives, true negatives, false positives, and false negatives. These metrics are a comprehensive evaluation of the model's performance, considering its correctness, the ability to minimize false positives, sensitivity to true positives, and a balanced assessment of precision and recall. By incorporating these evaluation criteria, we ensure a the most thorough assessment of the model's predictive capabilities.
+
+***
+## Discussion 
+
+In this project, we aimed to explore the neural basis of behavior and decision-making by analyzing task performance data and neural activity recordings. The findings of our analysis provide valuable insights into the relationship between behavioral choices, neural activity, and experimental conditions. 
+
+The analysis of task performance data revealed that mice displayed a preference for leftward choices when the relative contrast of stimuli was more negative, indicating a preference for lower contrast on the left side. Conversely, they showed a bias towards rightward choices when the relative contrast was more positive, indicating a preference for higher contrast on the right side. The mice also exhibited a tendency to withhold a response or make no choice when the relative contrast was around zero, suggesting a preference for inaction when the stimuli had a balanced or similar contrast level. However, this preference for leftward choices diminished under certain pedestal conditions, where higher pedestal values resulted in a reduced inclination towards leftward choices even at more negative relative contrast values. These findings shed light on the intricate decision-making processes influenced by contrast levels and pedestal conditions.
+
+The analysis of neural activity highlighted the variability across sessions and brain regions. Spike rates exhibited consistent patterns across different choice types, indicating the involvement of common neural mechanisms underlying decision-making. However, certain sessions showed heightened activity, suggesting the presence of session-specific factors modulating neural engagement. The dispersion of brain regions and varying activity levels further indicate the involvement of multiple brain areas in the decision-making process. This finding supports the notion that decision-making is a distributed process involving the integration of information from various brain regions.
+
+To facilitate data integration, we constructed a data frame capturing essential trial information and spike rate data for the top neurons across sessions. Preprocessing steps, such as scaling spike rate values, were performed to ensure comparability across sessions. The incorporation of behavioral information, such as different rewarding mechanisms and session IDs, allowed for a comprehensive understanding of the experimental conditions and their influence on choice.
+
+While our data integration approach successfully combined behavioral and neural information, we encountered some limitations during the analysis. Clustering techniques initially employed using spike counts alone yielded overlapping clusters, suggesting that this variable alone may not be sufficient for effectively grouping the data. Further exploration incorporating spike rate and contrast variables into the clustering process was limited by the categorical nature of some variables. In future research, we would like to explore clustering techniques specifically designed for categorical variables to improve the grouping of data and facilitate information sharing across sessions.
+
+Despite these limitations, the logistic regression model achieved a high average accuracy of 0.98, indicating strong predictive performance. The integrated data from multiple sessions and the selected variables proved valuable in predicting the feedback type. The overall confusion matrix revealed that the model correctly predicted a significant number of instances, with 57 true negatives and 142 true positives. Although there were some misclassifications (3 false positives and 1 false negative), the overall performance of the model was promising. These results underscore the predictive power of the integrated data and selected variables in determining the feedback type, enhancing our understanding of the underlying dynamics in the dataset. We should note, however, that the predictor variables were seen to be correlated amongts each other (notably, contrasts and relative contrasts), which could affect the interpretability of our model.
+
+In conclusion, our project sheds light on the neural basis of behavior and decision-making through the analysis of task performance data and neural activity recordings. The findings highlight the influence of contrast levels on choice behavior and reveal the variability of neural activity across sessions and brain regions. 
+
+*** 
+## Acknowledgement {-}
+
+I would like to acknowledge my former lab supervisor, Kyle Ireton, for his invaluable guidance throughout this project. I am grateful for the knowledge and expertise he shared, which we gained from our work at Tim Hanks' lab on behavior experiments with mice focusing on maternal immune activation and its impact on attention. Kyle's mentorship and support have been instrumental in shaping my understanding of experimental design, data analysis, and interpretation. I am truly grateful for his contributions to my research journey.
+
+***
+## Reference {-}
+
+Chen, S. (2023). Class notes on Fundamentals of Statistical Data Science. STA141A, University of California, Davis.
+
+Dewell, R.B., & Gabbiani, F. (2012). Escape Behavior: Linking Neural Computation to Action. Current Biology, 22(5), R162-R164. doi: 10.1016/j.cub.2012.01.061
+
+Fuquene-Patino, J. (2022). Class notes on Applied Statistical Methods. STA108, University of California, Davis.
+
+Shadlen M.N., Newsome W.T. The variable discharge of cortical neurons: implications for connectivity, computation, and information coding. J. Neurosci. 1998;18:3870–3896.
+
+Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. (2019). Distributed coding of choice, action and engagement across the mouse brain. Nature, 576, 266–273. https://doi.org/10.1038/s41586-019-1787-x
+
+Wickham, H., & Grolemund, G. (2017). Data visualization. In R for Data Science. Retrieved from https://r4ds.had.co.nz/data-visualisation.html
+
+Wickham, H., & Grolemund, G. (2017). R for Data Science - Model Building. Retrieved from https://r4ds.had.co.nz/model-building.html
+
+Wickham, H., & Grolemund, G. (2017). Iteration. In R for Data Science. Retrieved from https://r4ds.had.co.nz/iteration.html
+
+*** 
+## Session info {-}
+```{r}
+sessionInfo()
+```
+*** 
+## Appendix {-}
+\begin{center} Appendix: R Script \end{center}
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+```
+
