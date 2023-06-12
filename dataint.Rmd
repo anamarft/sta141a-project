@@ -1,0 +1,163 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-05-26"
+---
+
+```{r}
+spike_rate_list <- list()
+
+for (s in 1:length(session)) {
+  current_session <- session[[s]]
+  
+  num_trials <- length(current_session$spks)
+  
+  # initialize the maximum number of neurons to 0
+  max_num_neurons <- 0
+
+  spike_rate_matrices <- list()
+
+  for (tr in 1:num_trials) {
+    spks <- current_session$spks[[tr]]
+    
+    num_neurons <- nrow(spks)
+    
+    # update the maximum number of neurons 
+    if (num_neurons > max_num_neurons) {
+      max_num_neurons <- num_neurons
+    }
+    
+    # calculate the spike rate matrix for the current trial
+    spike_rate_matrix <- matrix(0, nrow = num_neurons, ncol = 1)
+    
+    # calculate the spike rate for each neuron in the current trial
+    for (neuron in 1:num_neurons) {
+      # calculate the spike rate for the current neuron in the current trial
+      spike_rate <- sum(spks[neuron, ] == 1) / num_time_bins
+      
+      # store the spike rate in the matrix
+      spike_rate_matrix[neuron, 1] <- spike_rate
+    }
+    
+    # store the spike rate matrix for the current trial
+    spike_rate_matrices[[tr]] <- spike_rate_matrix
+  }
+  
+  # pad the spike rate matrices to have the same number of rows (neurons)
+  padded_spike_rate_matrices <- lapply(spike_rate_matrices, function(matrix) {
+    if (nrow(matrix) < max_num_neurons) {
+      padded_matrix <- matrix(0, nrow = max_num_neurons, ncol = 1)
+      padded_matrix[1:nrow(matrix), ] <- matrix
+      matrix <- padded_matrix
+    }
+    matrix
+  })
+
+  spike_rate_matrix <- do.call(cbind, padded_spike_rate_matrices)
+  
+  spike_rate_list[[s]] <- spike_rate_matrix
+}
+```
+
+```{r}
+# create a vector to store the most active neuron for each session
+most_active_neurons <- vector("integer", length = length(spike_rate_list))
+
+for (s in 1:length(spike_rate_list)) {
+  spike_rate_matrix <- spike_rate_list[[s]]
+  
+  # calculate the total spike rate for each neuron in the session
+  total_spike_rates <- rowSums(spike_rate_matrix)
+  
+  most_active_neuron_index <- which.max(total_spike_rates)
+  
+  most_active_neurons[s] <- most_active_neuron_index
+}
+
+# print the most active neuron for each session
+for (s in 1:length(most_active_neurons)) {
+  cat("Session", s, "- Most Active Neuron:", most_active_neurons[s], "\n")
+}
+```
+
+
+```{r}
+# create a list to store the trial information for the most active neurons in each session
+trial_info_list <- list()
+
+# number of top neurons to consider
+num_top_neurons <- 3
+
+for (s in 1:length(spike_rate_list)) {
+  # get the spike rate matrix for the current session
+  spike_rate_matrix <- spike_rate_list[[s]]
+  
+  # calculate the total spike rate for each neuron in the session
+  total_spike_rates <- rowSums(spike_rate_matrix)
+  
+  # find the indices of the top neurons
+  top_neuron_indices <- order(total_spike_rates, decreasing = TRUE)[1:num_top_neurons]
+  
+  # Get the current session
+  current_session <- session[[s]]
+  
+  # get the trial information for the top neurons in the current session
+  trial_info <- data.frame(
+    mouse_name = current_session$mouse_name, 
+    session = s,  
+    trial_id = current_session$trial_id,
+    contrast_left = current_session$contrast_left,
+    contrast_right = current_session$contrast_right,
+    pedestal = pmin(current_session$contrast_left, current_session$contrast_right),
+    rel_contrast = ifelse(current_session$contrast_left > current_session$contrast_right,
+                           current_session$contrast_left - pmin(current_session$contrast_left, current_session$contrast_right),
+                           -(current_session$contrast_right - pmin(current_session$contrast_left, current_session$contrast_right))),
+    choice = ifelse(current_session$contrast_left > current_session$contrast_right &
+                      current_session$feedback_type == "1", "right",
+                    ifelse(current_session$contrast_right > current_session$contrast_left & 
+                             current_session$feedback_type == "1", "left",
+                           ifelse(current_session$contrast_left == 0 & current_session$contrast_right == 0 &
+                                    current_session$feedback_type == "1", "none", "NoGo"))),
+    feedback_type = current_session$feedback_type
+  )
+  
+  # add columns for spike rates of the top neurons
+  for (i in 1:num_top_neurons) {
+    neuron_index <- top_neuron_indices[i]
+    spike_rate_col <- paste0("spike_rate_", i)
+    trial_info[, spike_rate_col] <- spike_rate_matrix[neuron_index, ]
+    
+    # get the brain area for the current neuron
+    brain_area <- current_session$brain_area[neuron_index]
+    
+    # add a column for the brain area of the current neuron
+    brain_area_col <- paste0("brain_area_", i)
+    trial_info[, brain_area_col] <- brain_area
+  }
+  
+  # add the trial information for the top neurons in the current session to the list
+  trial_info_list[[s]] <- trial_info
+}
+
+# combine all session trial information data frames into a single data frame
+trial_info_combined <- do.call(rbind, trial_info_list)
+
+print(trial_info_combined)
+```
+
+```{r}
+#scale
+# identify the minimum and maximum spike rates across the three spike rate columns
+min_spike_rate <- min(trial_info_combined[, c("spike_rate_1", "spike_rate_2", "spike_rate_3")])
+max_spike_rate <- max(trial_info_combined[, c("spike_rate_1", "spike_rate_2", "spike_rate_3")])
+
+# normalize the spike rates
+trial_info_combined$spike_rate_1_normalized <- (trial_info_combined$spike_rate_1 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+trial_info_combined$spike_rate_2_normalized <- (trial_info_combined$spike_rate_2 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+trial_info_combined$spike_rate_3_normalized <- (trial_info_combined$spike_rate_3 - min_spike_rate) / (max_spike_rate - min_spike_rate)
+print(trial_info_combined)
+```
+
+```{r}
+trial_info_combined$feedback_type <- ifelse(trial_info_combined$feedback_type == 1, 1, 0)
+```
