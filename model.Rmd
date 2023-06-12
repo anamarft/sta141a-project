@@ -1,0 +1,67 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-05-26"
+---
+
+```{r}
+set.seed(141)
+
+# num of folds for cross-validation
+num_folds <- 5
+
+# vectors to evaluate model
+accuracies <- vector("numeric", length = num_folds)
+confusion_matrices <- vector("list", length = num_folds)
+
+# index
+indices <- 1:nrow(trial_info_combined)
+
+# shuffle
+shuffled_indices <- sample(indices)
+
+#  number of samples in each fold
+fold_size <- floor(nrow(trial_info_combined) / num_folds)
+
+# cross-validation
+for (fold in 1:num_folds) {
+  # test indices for the current fold
+  test_indices <- shuffled_indices[((fold - 1) * fold_size + 1):(fold * fold_size)]
+  
+  # set training indices
+  train_indices <- setdiff(shuffled_indices, test_indices)
+  
+  # split the data into train and test
+  train_data <- trial_info_combined[train_indices, ]
+  test_data <- trial_info_combined[test_indices, ]
+  
+  # fit logistic regression model to train
+  model <- glm(feedback_type ~.,
+               data = train_data, family = binomial)
+  
+  # predictions w trained model
+  test_predictions <- predict(model, newdata = test_data, type = "response")
+  
+  # convert predicted probs
+  test_predictions <- ifelse(test_predictions > 0.5, "1", "0")
+  
+  # accuracy calculation
+  accuracy <- mean(test_predictions == test_data$feedback_type)
+  accuracies[fold] <- accuracy
+  
+  # confusion matrix
+  confusion_matrix <- table(Actual = test_data$feedback_type, Predicted = test_predictions)
+  confusion_matrices[[fold]] <- confusion_matrix
+}
+
+# avg accuracy across folds
+mean_accuracy <- mean(accuracies)
+
+# overall confusion matrix
+overall_confusion_matrix <- Reduce(`+`, confusion_matrices)
+
+# print!
+cat("Average Accuracy:", mean_accuracy, "\n\n")
+cat("Overall Confusion Matrix:\n")
+print(overall_confusion_matrix)
+```
